@@ -1,0 +1,33 @@
+{
+  "name": "pnpm-dep-source",
+  "version": "0.1.0",
+  "description": "CLI to switch pnpm dependencies between local, GitHub, and NPM sources",
+  "type": "module",
+  "bin": {
+    "pnpm-dep-source": "./dist/cli.js",
+    "pds": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "pnpm build"
+  },
+  "keywords": [
+    "pnpm",
+    "dependency",
+    "monorepo",
+    "workspace",
+    "development"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
