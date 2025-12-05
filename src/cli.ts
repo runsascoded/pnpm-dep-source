@@ -182,9 +182,12 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
   writeFileSync(vitePath, content)
 }
 
-function resolveGitRef(localPath: string, ref: string): string {
-  // Try refs in order: as-is, r/<ref> (remote tracking), origin/<ref>
-  const refsToTry = [ref, `r/${ref}`, `origin/${ref}`]
+function resolveGitRef(localPath: string, ref: string, preferRemote: boolean = false): string {
+  // Build list of refs to try - prioritize remote refs when preferRemote is true
+  const remoteRefs = [`r/${ref}`, `origin/${ref}`]
+  const refsToTry = preferRemote
+    ? [...remoteRefs, ref]
+    : [ref, ...remoteRefs]
 
   for (const tryRef of refsToTry) {
     const result = spawnSync('git', ['rev-parse', '--verify', tryRef], {
@@ -336,12 +339,17 @@ program
 
     const absLocalPath = resolve(projectRoot, depConfig.localPath)
     const distBranch = depConfig.distBranch ?? 'dist'
-    const targetRef = ref ?? `r/${distBranch}`
 
-    let resolvedRef = targetRef
-    if (options.sha || !ref) {
-      // Always resolve to SHA for dist branch default
-      resolvedRef = resolveGitRef(absLocalPath, targetRef)
+    let resolvedRef: string
+    if (!ref) {
+      // No ref provided: use dist branch, resolve to SHA
+      resolvedRef = resolveGitRef(absLocalPath, distBranch, true)
+    } else if (options.sha) {
+      // Ref provided with -s: treat as remote ref, resolve to SHA
+      resolvedRef = resolveGitRef(absLocalPath, ref, true)
+    } else {
+      // Ref provided without -s: use as-is
+      resolvedRef = ref
     }
 
     const pkg = loadPackageJson(projectRoot)
