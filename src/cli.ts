@@ -183,14 +183,24 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
 }
 
 function resolveGitRef(localPath: string, ref: string): string {
-  const result = spawnSync('git', ['rev-parse', ref], {
-    cwd: localPath,
-    encoding: 'utf-8',
-  })
-  if (result.status !== 0) {
-    throw new Error(`Failed to resolve git ref "${ref}": ${result.stderr}`)
+  // Try refs in order: as-is, r/<ref> (remote tracking), origin/<ref>
+  const refsToTry = [ref, `r/${ref}`, `origin/${ref}`]
+
+  for (const tryRef of refsToTry) {
+    const result = spawnSync('git', ['rev-parse', '--verify', tryRef], {
+      cwd: localPath,
+      encoding: 'utf-8',
+    })
+    if (result.status === 0) {
+      const resolved = result.stdout.trim()
+      // Verify it's a SHA (40 hex chars), not just echoing back the ref name
+      if (/^[0-9a-f]{40}$/.test(resolved)) {
+        return resolved
+      }
+    }
   }
-  return result.stdout.trim()
+
+  throw new Error(`Failed to resolve git ref "${ref}" (tried: ${refsToTry.join(', ')})`)
 }
 
 function getLocalPackageName(localPath: string): string {
