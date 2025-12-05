@@ -207,6 +207,16 @@ function runPnpmInstall(projectRoot: string): void {
   execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' })
 }
 
+function getLatestNpmVersion(packageName: string): string {
+  const result = spawnSync('npm', ['view', packageName, 'version'], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`)
+  }
+  return result.stdout.trim()
+}
+
 program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
@@ -360,8 +370,9 @@ program
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     const npmName = depConfig.npm ?? depName
-    // Use version with ^ prefix, or just "latest" (no ^ prefix for latest)
-    const specifier = version ? `^${version}` : 'latest'
+    // Resolve latest version from NPM if not specified
+    const resolvedVersion = version ?? getLatestNpmVersion(npmName)
+    const specifier = `^${resolvedVersion}`
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, specifier)
