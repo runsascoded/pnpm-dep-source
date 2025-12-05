@@ -22,7 +22,16 @@
     "workspace",
     "development"
   ],
+  "author": "Ryan Williams <ryan@runsascoded.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/runsascoded/pnpm-dep-source.git"
+  },
+  "homepage": "https://github.com/runsascoded/pnpm-dep-source#readme",
+  "bugs": {
+    "url": "https://github.com/runsascoded/pnpm-dep-source/issues"
+  },
   "dependencies": {
     "commander": "^13.0.0"
   },
