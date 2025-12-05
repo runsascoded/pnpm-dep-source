@@ -182,28 +182,15 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
   writeFileSync(vitePath, content)
 }
 
-function resolveGitRef(localPath: string, ref: string, preferRemote: boolean = false): string {
-  // Build list of refs to try - prioritize remote refs when preferRemote is true
-  const remoteRefs = [`r/${ref}`, `origin/${ref}`]
-  const refsToTry = preferRemote
-    ? [...remoteRefs, ref]
-    : [ref, ...remoteRefs]
-
-  for (const tryRef of refsToTry) {
-    const result = spawnSync('git', ['rev-parse', '--verify', tryRef], {
-      cwd: localPath,
-      encoding: 'utf-8',
-    })
-    if (result.status === 0) {
-      const resolved = result.stdout.trim()
-      // Verify it's a SHA (40 hex chars), not just echoing back the ref name
-      if (/^[0-9a-f]{40}$/.test(resolved)) {
-        return resolved
-      }
-    }
+function resolveGitHubRef(repo: string, ref: string): string {
+  // Use gh api to resolve ref to SHA from GitHub
+  const result = spawnSync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`)
   }
-
-  throw new Error(`Failed to resolve git ref "${ref}" (tried: ${refsToTry.join(', ')})`)
+  return result.stdout.trim()
 }
 
 function getLocalPackageName(localPath: string): string {
@@ -337,16 +324,15 @@ program
       throw new Error(`No GitHub repo configured for ${depName}. Use "pnpm-dep-source init" with --github`)
     }
 
-    const absLocalPath = resolve(projectRoot, depConfig.localPath)
     const distBranch = depConfig.distBranch ?? 'dist'
 
     let resolvedRef: string
     if (!ref) {
       // No ref provided: use dist branch, resolve to SHA
-      resolvedRef = resolveGitRef(absLocalPath, distBranch, true)
+      resolvedRef = resolveGitHubRef(depConfig.github, distBranch)
     } else if (options.sha) {
-      // Ref provided with -s: treat as remote ref, resolve to SHA
-      resolvedRef = resolveGitRef(absLocalPath, ref, true)
+      // Ref provided with -s: resolve to SHA via GitHub API
+      resolvedRef = resolveGitHubRef(depConfig.github, ref)
     } else {
       // Ref provided without -s: use as-is
       resolvedRef = ref
