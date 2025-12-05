@@ -360,10 +360,11 @@ program
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     const npmName = depConfig.npm ?? depName
-    const specifier = version ? `${version}` : 'latest'
+    // Use version with ^ prefix, or just "latest" (no ^ prefix for latest)
+    const specifier = version ? `^${version}` : 'latest'
 
     const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, `^${specifier}`)
+    updatePackageJsonDep(pkg, depName, specifier)
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
