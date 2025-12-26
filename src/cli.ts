@@ -53,6 +53,21 @@ function savePackageJson(projectRoot: string, pkg: Record<string, unknown>): voi
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 }
 
+function removePnpmOverride(pkg: Record<string, unknown>, depName: string): void {
+  const pnpm = pkg.pnpm as Record<string, unknown> | undefined
+  if (!pnpm) return
+
+  const overrides = pnpm.overrides as Record<string, string> | undefined
+  if (!overrides || !(depName in overrides)) return
+
+  delete overrides[depName]
+
+  // Clean up empty overrides object
+  if (Object.keys(overrides).length === 0) {
+    delete pnpm.overrides
+  }
+}
+
 interface WorkspaceConfig {
   packages?: string[]
 }
@@ -174,9 +189,9 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
       ''
     )
     // Clean up empty exclude arrays
-    content = content.replace(/exclude:\s*\[\s*\],?\s*\n?/g, '')
-    // Clean up empty optimizeDeps
-    content = content.replace(/optimizeDeps:\s*\{\s*\},?\s*\n?/g, '')
+    content = content.replace(/\s*exclude:\s*\[\s*\],?/g, '')
+    // Clean up empty optimizeDeps (including leading whitespace)
+    content = content.replace(/\s*optimizeDeps:\s*\{\s*\},?/g, '')
   }
 
   writeFileSync(vitePath, content)
@@ -340,6 +355,7 @@ program
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, `github:${depConfig.github}#${resolvedRef}`)
+    removePnpmOverride(pkg, depName)
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
@@ -380,6 +396,7 @@ program
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, specifier)
+    removePnpmOverride(pkg, depName)
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
