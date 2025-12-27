@@ -235,7 +235,7 @@ function getLatestNpmVersion(packageName: string): string {
 program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
-  .version('0.1.0')
+  .version('0.1.1')
 
 program
   .command('init <local-path>')
