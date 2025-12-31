@@ -9,18 +9,12 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN mkdir -p $PNPM_HOME
 
 # Create test directories
-WORKDIR /app
 RUN mkdir -p /test-project /mock-dep
 
-# Copy package files and install dependencies
-COPY package.json pnpm-lock.yaml /app/
-RUN pnpm install
-
-# Copy source and build
-COPY tsconfig.json /app/
-COPY src/ /app/src/
-COPY dist/ /app/dist/
-COPY test/ /app/test/
+# Copy project and install
+WORKDIR /app
+COPY . /app/
+RUN pnpm install && pnpm build
 
 # Install pds globally
 RUN pnpm add -g file:/app
@@ -29,4 +23,4 @@ RUN pnpm add -g file:/app
 RUN echo '{"name": "@test/mock-dep", "version": "1.0.0"}' > /mock-dep/package.json
 
 # Run e2e tests
-CMD ["pnpm", "exec", "vitest", "run", "test/e2e/e2e.test.ts"]
+CMD ["pnpm", "exec", "vitest", "run", "-c", "test/e2e/vitest.config.ts"]
