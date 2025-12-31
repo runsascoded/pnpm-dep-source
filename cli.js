@@ -238,16 +238,28 @@ function getGlobalInstallSource(packageName = 'pnpm-dep-source') {
         const pkg = data[0]?.dependencies?.[packageName];
         if (!pkg)
             return null;
-        const version = pkg.version;
-        const from = pkg.from || '';
-        if (from.startsWith('file:')) {
-            return { source: 'local', specifier: from };
+        const version = pkg.version || '';
+        const resolved = pkg.resolved || '';
+        // Local file install: version is "file:..." path
+        if (version.startsWith('file:')) {
+            // Resolve relative path to absolute (relative to pnpm global dir)
+            const filePath = version.slice(5); // remove "file:"
+            const globalDir = data[0]?.path || '';
+            const absPath = globalDir ? resolve(globalDir, filePath) : filePath;
+            return { source: 'local', specifier: absPath };
         }
-        else if (from.startsWith('github:')) {
-            return { source: 'github', specifier: from };
+        // Check resolved URL for source detection
+        if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
+            // Extract SHA from GitHub URL
+            const shaMatch = resolved.match(/([a-f0-9]{40})/);
+            const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
+            return { source: 'github', specifier: `${sha}; ${version}` };
         }
-        else if (from.includes('gitlab.com') && from.includes('/-/archive/')) {
-            return { source: 'gitlab', specifier: from };
+        else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
+            // Extract ref from GitLab tarball URL
+            const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//);
+            const ref = refMatch ? refMatch[1].slice(0, 7) : '';
+            return { source: 'gitlab', specifier: `${ref}; ${version}` };
         }
         else if (version) {
             return { source: 'npm', specifier: version };
@@ -267,8 +279,8 @@ program
     .description('Initialize a dependency in the config')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
     .option('-g, --global', 'Add to global config (for CLI tools)')
-    .option('-G, --github <repo>', 'GitHub repo (e.g. "user/repo")')
-    .option('-l, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
+    .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+    .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
     .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
     .action((localPath, options) => {
     const absLocalPath = resolve(localPath);
@@ -594,7 +606,24 @@ program
     .command('status [dep]')
     .alias('s')
     .description('Show current source for dependency (or all if none specified)')
-    .action((depQuery) => {
+    .option('-g, --global', 'Show status of global dependencies')
+    .action((depQuery, options) => {
+    if (options.global) {
+        const config = loadGlobalConfig();
+        const deps = depQuery
+            ? [findMatchingDep(config, depQuery)]
+            : Object.entries(config.dependencies);
+        for (const [name] of deps) {
+            const installSource = getGlobalInstallSource(name);
+            if (installSource) {
+                console.log(`${name}: ${installSource.source} (${installSource.specifier})`);
+            }
+            else {
+                console.log(`${name}: (not installed)`);
+            }
+        }
+        return;
+    }
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
     const pkg = loadPackageJson(projectRoot);
