@@ -15,14 +15,14 @@ pnpm add -g pnpm-dep-source
 ### Initialize a dependency
 
 ```bash
-# In your project directory
-pnpm-dep-source init ../../path/to/local/pkg -g github-user/repo
-
-# Or with alias
-pds init ../../path/to/local/pkg -g github-user/repo
+# In your project directory (uses local .pnpm-dep-source.json)
+pds init ../../path/to/local/pkg -G github-user/repo
 
 # With GitLab
 pds init ../../path/to/local/pkg -l gitlab-user/repo
+
+# Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
+pds init /path/to/local/cli -g -G github-user/repo
 ```
 
 ### Switch to local development
@@ -112,12 +112,32 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 
 ## Options
 
+- `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools
 - `-I, --no-install`: Skip running `pnpm install` after changes
 - `-s, --sha`: Resolve git ref to SHA (for `github`/`gitlab` commands)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
-- `-g, --github <repo>`: GitHub repo for `init` command
+- `-G, --github <repo>`: GitHub repo for `init` command
 - `-l, --gitlab <repo>`: GitLab repo for `init` command
 - `-n, --npm <name>`: NPM package name for `init` command
+
+## Global CLI tools
+
+For managing globally-installed CLI tools, use `-g` with all commands:
+
+```bash
+# Initialize a global CLI tool
+pds init /path/to/local/cli -g -G github-user/repo
+
+# List global deps
+pds ls -g
+
+# Switch global install source
+pds gh -g            # Install from GitHub dist branch
+pds l -g             # Install from local directory
+pds n -g             # Install from NPM
+```
+
+Global config is stored at `~/.config/pnpm-dep-source/config.json`.
 
 ## Recommended workflow
 

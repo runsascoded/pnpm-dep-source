@@ -2,10 +2,13 @@
 
 import { program } from 'commander'
 import { execSync, spawnSync } from 'child_process'
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { basename, dirname, join, relative, resolve } from 'path'
 
 const CONFIG_FILE = '.pnpm-dep-source.json'
+const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source')
+const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json')
 
 interface DepConfig {
   localPath: string
@@ -42,6 +45,20 @@ function loadConfig(projectRoot: string): Config {
 function saveConfig(projectRoot: string, config: Config): void {
   const configPath = join(projectRoot, CONFIG_FILE)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
+}
+
+function loadGlobalConfig(): Config {
+  if (!existsSync(GLOBAL_CONFIG_FILE)) {
+    return { dependencies: {} }
+  }
+  return JSON.parse(readFileSync(GLOBAL_CONFIG_FILE, 'utf-8'))
+}
+
+function saveGlobalConfig(config: Config): void {
+  if (!existsSync(GLOBAL_CONFIG_DIR)) {
+    mkdirSync(GLOBAL_CONFIG_DIR, { recursive: true })
+  }
+  writeFileSync(GLOBAL_CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
 }
 
 function loadPackageJson(projectRoot: string): Record<string, unknown> {
@@ -270,8 +287,8 @@ function getLatestNpmVersion(packageName: string): string {
   return result.stdout.trim()
 }
 
-function getGlobalInstallSource(): { source: string; specifier: string } | null {
-  const result = spawnSync('pnpm', ['list', '-g', 'pnpm-dep-source', '--json'], {
+function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: string; specifier: string } | null {
+  const result = spawnSync('pnpm', ['list', '-g', packageName, '--json'], {
     encoding: 'utf-8',
   })
   if (result.status !== 0) {
@@ -280,7 +297,7 @@ function getGlobalInstallSource(): { source: string; specifier: string } | null 
   try {
     const data = JSON.parse(result.stdout)
     // pnpm list -g --json returns array of global packages
-    const pkg = data[0]?.dependencies?.['pnpm-dep-source']
+    const pkg = data[0]?.dependencies?.[packageName]
     if (!pkg) return null
 
     const version = pkg.version
@@ -310,17 +327,37 @@ program
   .command('init <local-path>')
   .description('Initialize a dependency in the config')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
-  .option('-g, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+  .option('-g, --global', 'Add to global config (for CLI tools)')
+  .option('-G, --github <repo>', 'GitHub repo (e.g. "user/repo")')
   .option('-l, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
-  .action((localPath: string, options: { github?: string; gitlab?: string; npm?: string; distBranch: string }) => {
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
+  .action((localPath: string, options: { github?: string; global?: boolean; gitlab?: string; npm?: string; distBranch: string }) => {
     const absLocalPath = resolve(localPath)
-    const relLocalPath = relative(projectRoot, absLocalPath)
-
     const pkgName = getLocalPackageName(absLocalPath)
     const npmName = options.npm ?? pkgName
+
+    if (options.global) {
+      const config = loadGlobalConfig()
+      config.dependencies[pkgName] = {
+        localPath: absLocalPath,  // Use absolute path for global config
+        github: options.github,
+        gitlab: options.gitlab,
+        npm: npmName,
+        distBranch: options.distBranch,
+      }
+      saveGlobalConfig(config)
+      console.log(`Initialized ${pkgName} (global):`)
+      console.log(`  Local path: ${absLocalPath}`)
+      if (options.github) console.log(`  GitHub: ${options.github}`)
+      if (options.gitlab) console.log(`  GitLab: ${options.gitlab}`)
+      console.log(`  NPM: ${npmName}`)
+      console.log(`  Dist branch: ${options.distBranch}`)
+      return
+    }
+
+    const projectRoot = findProjectRoot()
+    const config = loadConfig(projectRoot)
+    const relLocalPath = relative(projectRoot, absLocalPath)
 
     config.dependencies[pkgName] = {
       localPath: relLocalPath,
@@ -343,7 +380,28 @@ program
   .command('list')
   .alias('ls')
   .description('List configured dependencies and their current sources')
-  .action(() => {
+  .option('-g, --global', 'List global dependencies')
+  .action((options: { global?: boolean }) => {
+    if (options.global) {
+      const config = loadGlobalConfig()
+
+      if (Object.keys(config.dependencies).length === 0) {
+        console.log('No global dependencies configured. Use "pds init -G <path>" to add one.')
+        return
+      }
+
+      for (const [name, dep] of Object.entries(config.dependencies)) {
+        const installSource = getGlobalInstallSource(name)
+        console.log(`${name}:`)
+        console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`)
+        console.log(`  Local: ${dep.localPath}`)
+        if (dep.github) console.log(`  GitHub: ${dep.github}`)
+        if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
+        if (dep.npm) console.log(`  NPM: ${dep.npm}`)
+      }
+      return
+    }
+
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const pkg = loadPackageJson(projectRoot)
@@ -368,20 +426,22 @@ program
   .command('local [dep]')
   .alias('l')
   .description('Switch dependency to local directory')
-  .option('-g, --global', 'Install globally')
+  .option('-g, --global', 'Install globally (uses global config)')
   .option('-I, --no-install', 'Skip running pnpm install')
   .action((depQuery: string | undefined, options: { global: boolean; install: boolean }) => {
+    if (options.global) {
+      const config = loadGlobalConfig()
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      runGlobalInstall(`file:${depConfig.localPath}`)
+      console.log(`Installed ${depName} globally from local: ${depConfig.localPath}`)
+      return
+    }
+
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     const absLocalPath = resolve(projectRoot, depConfig.localPath)
-
-    if (options.global) {
-      runGlobalInstall(`file:${absLocalPath}`)
-      console.log(`Installed ${depName} globally from local: ${absLocalPath}`)
-      return
-    }
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, 'workspace:*')
@@ -399,7 +459,7 @@ program
     // Update vite.config.ts
     updateViteConfig(projectRoot, depName, true)
 
-    console.log(`Switched ${depName} to local: ${depConfig.localPath}`)
+    console.log(`Switched ${depName} to local: ${absLocalPath}`)
 
     if (options.install) {
       runPnpmInstall(projectRoot)
@@ -410,12 +470,11 @@ program
   .command('github [dep] [ref]')
   .aliases(['gh', 'g'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
-  .option('-g, --global', 'Install globally')
+  .option('-g, --global', 'Install globally (uses global config)')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
   .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
+    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const deps = Object.entries(config.dependencies)
 
     // If only one arg and exactly one dep configured, treat arg as ref
@@ -432,7 +491,7 @@ program
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.github) {
-      throw new Error(`No GitHub repo configured for ${depName}. Use "pnpm-dep-source init" with --github`)
+      throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`)
     }
 
     const distBranch = depConfig.distBranch ?? 'dist'
@@ -456,6 +515,8 @@ program
       console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`)
       return
     }
+
+    const projectRoot = findProjectRoot()
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, specifier)
@@ -487,12 +548,11 @@ program
   .command('gitlab [dep] [ref]')
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
-  .option('-g, --global', 'Install globally')
+  .option('-g, --global', 'Install globally (uses global config)')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
   .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
+    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const deps = Object.entries(config.dependencies)
 
     // If only one arg and exactly one dep configured, treat arg as ref
@@ -509,7 +569,7 @@ program
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.gitlab) {
-      throw new Error(`No GitLab repo configured for ${depName}. Use "pnpm-dep-source init" with --gitlab`)
+      throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`)
     }
 
     const distBranch = depConfig.distBranch ?? 'dist'
@@ -536,6 +596,8 @@ program
       console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`)
       return
     }
+
+    const projectRoot = findProjectRoot()
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, tarballUrl)
@@ -567,11 +629,10 @@ program
   .command('npm [dep] [version]')
   .alias('n')
   .description('Switch dependency to NPM (defaults to latest)')
-  .option('-g, --global', 'Install globally')
+  .option('-g, --global', 'Install globally (uses global config)')
   .option('-I, --no-install', 'Skip running pnpm install')
   .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; install: boolean }) => {
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
+    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const deps = Object.entries(config.dependencies)
 
     // If only one arg and exactly one dep configured, treat arg as version
@@ -597,6 +658,8 @@ program
       console.log(`Installed ${depName} globally from NPM: ${specifier}`)
       return
     }
+
+    const projectRoot = findProjectRoot()
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, `^${resolvedVersion}`)
