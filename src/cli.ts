@@ -109,8 +109,23 @@ function saveWorkspaceYaml(projectRoot: string, config: WorkspaceConfig | null):
   writeFileSync(wsPath, content)
 }
 
-function findMatchingDep(config: Config, query: string): [string, DepConfig] {
-  const matches = Object.entries(config.dependencies).filter(([name]) =>
+function findMatchingDep(config: Config, query?: string): [string, DepConfig] {
+  const deps = Object.entries(config.dependencies)
+
+  if (!query) {
+    // No query - default to single dep if there's exactly one
+    if (deps.length === 0) {
+      throw new Error('No dependencies configured. Use "pds init <path>" to add one.')
+    }
+    if (deps.length === 1) {
+      return deps[0]
+    }
+    throw new Error(
+      `Multiple dependencies configured. Specify one: ${deps.map(([n]) => n).join(', ')}`
+    )
+  }
+
+  const matches = deps.filter(([name]) =>
     name.toLowerCase().includes(query.toLowerCase())
   )
   if (matches.length === 0) {
@@ -350,12 +365,12 @@ program
   })
 
 program
-  .command('local <dep>')
+  .command('local [dep]')
   .alias('l')
   .description('Switch dependency to local directory')
   .option('-g, --global', 'Install globally')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, options: { global: boolean; install: boolean }) => {
+  .action((depQuery: string | undefined, options: { global: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
@@ -392,15 +407,28 @@ program
   })
 
 program
-  .command('github <dep> [ref]')
+  .command('github [dep] [ref]')
   .aliases(['gh', 'g'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, ref: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
+  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
+    const deps = Object.entries(config.dependencies)
+
+    // If only one arg and exactly one dep configured, treat arg as ref
+    let depQuery: string | undefined
+    let ref: string | undefined
+    if (arg1 && !arg2 && deps.length === 1) {
+      depQuery = undefined
+      ref = arg1
+    } else {
+      depQuery = arg1
+      ref = arg2
+    }
+
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.github) {
@@ -456,15 +484,28 @@ program
   })
 
 program
-  .command('gitlab <dep> [ref]')
+  .command('gitlab [dep] [ref]')
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, ref: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
+  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
+    const deps = Object.entries(config.dependencies)
+
+    // If only one arg and exactly one dep configured, treat arg as ref
+    let depQuery: string | undefined
+    let ref: string | undefined
+    if (arg1 && !arg2 && deps.length === 1) {
+      depQuery = undefined
+      ref = arg1
+    } else {
+      depQuery = arg1
+      ref = arg2
+    }
+
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.gitlab) {
@@ -523,14 +564,27 @@ program
   })
 
 program
-  .command('npm <dep> [version]')
+  .command('npm [dep] [version]')
   .alias('n')
   .description('Switch dependency to NPM (defaults to latest)')
   .option('-g, --global', 'Install globally')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, version: string | undefined, options: { global: boolean; install: boolean }) => {
+  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
+    const deps = Object.entries(config.dependencies)
+
+    // If only one arg and exactly one dep configured, treat arg as version
+    let depQuery: string | undefined
+    let version: string | undefined
+    if (arg1 && !arg2 && deps.length === 1) {
+      depQuery = undefined
+      version = arg1
+    } else {
+      depQuery = arg1
+      version = arg2
+    }
+
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     const npmName = depConfig.npm ?? depName

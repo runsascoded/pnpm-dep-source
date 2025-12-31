@@ -238,4 +238,40 @@ describe('pds round-trips', () => {
       expect(pnpm.overrides).toBeUndefined()
     })
   })
+
+  describe('single-dep default', () => {
+    it('defaults to single dep when none specified', () => {
+      run('local -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
+    })
+
+    it('treats single arg as ref when one dep configured', () => {
+      run('github main -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
+    })
+
+    it('treats single arg as version for npm when one dep configured', () => {
+      run('npm 3.0.0 -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('^3.0.0')
+    })
+
+    it('errors when multiple deps and none specified', () => {
+      // Add a second dep
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/other-dep'] = {
+        localPath: '../other-dep',
+        github: 'test-org/other-dep',
+      }
+      writeJson(configPath, config)
+
+      expect(() => run('local -I')).toThrow(/Multiple dependencies configured/)
+    })
+  })
 })

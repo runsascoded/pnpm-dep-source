@@ -28,8 +28,10 @@ pds init ../../path/to/local/pkg -l gitlab-user/repo
 ### Switch to local development
 
 ```bash
-pds local <dep>    # or pds l <dep>
+pds local [dep]    # or pds l [dep]
 ```
+
+Note: `[dep]` is optional if only one dependency is configured.
 
 This will:
 - Set `package.json` dependency to `workspace:*`
@@ -40,9 +42,10 @@ This will:
 ### Switch to GitHub
 
 ```bash
-pds github <dep>           # Uses dist branch HEAD (resolved to SHA)
-pds github <dep> main      # Uses specific ref
-pds gh <dep> -s v1.0.0     # Resolves tag to SHA
+pds github [dep]           # Uses dist branch HEAD (resolved to SHA)
+pds github [dep] [ref]     # Uses specific ref
+pds gh [dep] -s v1.0.0     # Resolves tag to SHA
+pds gh main                # With one dep configured, arg is treated as ref
 ```
 
 This will:
@@ -54,9 +57,9 @@ This will:
 ### Switch to GitLab
 
 ```bash
-pds gitlab <dep>           # Uses dist branch HEAD (resolved to SHA)
-pds gitlab <dep> main      # Uses specific ref
-pds gl <dep> -s v1.0.0     # Resolves tag to SHA
+pds gitlab [dep]           # Uses dist branch HEAD (resolved to SHA)
+pds gitlab [dep] [ref]     # Uses specific ref
+pds gl [dep] -s v1.0.0     # Resolves tag to SHA
 ```
 
 This will:
@@ -70,16 +73,16 @@ Note: GitLab uses tarball URLs (e.g. `https://gitlab.com/user/repo/-/archive/ref
 ### Switch to NPM
 
 ```bash
-pds npm <dep>              # Latest version
-pds npm <dep> 1.2.3        # Specific version
-pds n <dep>                # Alias
+pds npm [dep]              # Latest version
+pds npm [dep] [version]    # Specific version
+pds n 1.2.3                # With one dep, arg is treated as version
 ```
 
 ### Check status
 
 ```bash
 pds status           # Show all configured deps
-pds status <dep>     # Show specific dep
+pds status [dep]     # Show specific dep
 pds s                # Alias
 ```
 
