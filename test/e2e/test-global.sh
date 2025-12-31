@@ -3,11 +3,14 @@ set -e
 
 echo "--- Testing global installs ---"
 
-cd /app
+# Test: pds is installed
+echo "Test: pds --version"
+pds --version
 
 # Test: Initialize global config
+echo ""
 echo "Test: pds init -g"
-node dist/cli.js init /mock-dep -g -H test-org/mock-dep
+pds init /mock-dep -g -H test-org/mock-dep
 cat ~/.config/pnpm-dep-source/config.json
 
 # Verify global config was created
@@ -20,7 +23,7 @@ echo "PASS: Global config created"
 # Test: pds ls -g
 echo ""
 echo "Test: pds ls -g"
-node dist/cli.js ls -g | tee /tmp/ls-output.txt
+pds ls -g | tee /tmp/ls-output.txt
 if ! grep -q "@test/mock-dep" /tmp/ls-output.txt; then
   echo "FAIL: pds ls -g doesn't show mock-dep"
   exit 1
@@ -30,7 +33,7 @@ echo "PASS: pds ls -g shows mock-dep"
 # Test: pds l -g (local global install)
 echo ""
 echo "Test: pds l -g"
-node dist/cli.js l -g
+pds l -g
 pnpm list -g @test/mock-dep | tee /tmp/global-list.txt
 if ! grep -q "mock-dep" /tmp/global-list.txt; then
   echo "FAIL: Global local install failed"
@@ -41,7 +44,7 @@ echo "PASS: pds l -g works"
 # Test: pds status -g
 echo ""
 echo "Test: pds status -g"
-node dist/cli.js status -g | tee /tmp/status-output.txt
+pds status -g | tee /tmp/status-output.txt
 if ! grep -q "local" /tmp/status-output.txt; then
   echo "FAIL: pds status -g doesn't show local"
   exit 1
@@ -51,7 +54,7 @@ echo "PASS: pds status -g works"
 # Test: pds info
 echo ""
 echo "Test: pds info"
-node dist/cli.js info | tee /tmp/info-output.txt
+pds info | tee /tmp/info-output.txt
 if ! grep -q "pnpm-dep-source" /tmp/info-output.txt; then
   echo "FAIL: pds info failed"
   exit 1

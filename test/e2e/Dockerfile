@@ -12,9 +12,10 @@ RUN mkdir -p $PNPM_HOME
 WORKDIR /app
 RUN mkdir -p /test-project /mock-dep
 
-# Copy built CLI
+# Copy and install pds globally
+COPY package.json pnpm-lock.yaml /app/
 COPY dist/ /app/dist/
-COPY package.json /app/
+RUN pnpm add -g file:/app
 
 # Copy test scripts
 COPY test/e2e/*.sh /app/test/e2e/
