@@ -12,16 +12,21 @@ RUN mkdir -p $PNPM_HOME
 WORKDIR /app
 RUN mkdir -p /test-project /mock-dep
 
-# Copy and install pds globally
+# Copy package files and install dependencies
 COPY package.json pnpm-lock.yaml /app/
-COPY dist/ /app/dist/
-RUN pnpm add -g file:/app
+RUN pnpm install
 
-# Copy test scripts
-COPY test/e2e/*.sh /app/test/e2e/
-RUN chmod +x /app/test/e2e/*.sh
+# Copy source and build
+COPY tsconfig.json /app/
+COPY src/ /app/src/
+COPY dist/ /app/dist/
+COPY test/ /app/test/
+
+# Install pds globally
+RUN pnpm add -g file:/app
 
 # Create mock dependency
 RUN echo '{"name": "@test/mock-dep", "version": "1.0.0"}' > /mock-dep/package.json
 
-ENTRYPOINT ["/app/test/e2e/run.sh"]
+# Run e2e tests
+CMD ["pnpm", "exec", "vitest", "run", "test/e2e/e2e.test.ts"]
