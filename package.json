@@ -1,20 +1,11 @@
 {
   "name": "pnpm-dep-source",
-  "version": "0.1.1",
+  "version": "0.1.1-dist.89ba725",
   "description": "CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources",
   "type": "module",
   "bin": {
-    "pnpm-dep-source": "./dist/cli.js",
-    "pds": "./dist/cli.js"
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "vitest run",
-    "prepublishOnly": "pnpm build"
+    "pnpm-dep-source": "./cli.js",
+    "pds": "./cli.js"
   },
   "keywords": [
     "pnpm",
@@ -35,10 +26,5 @@
   },
   "dependencies": {
     "commander": "^13.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.7.0",
-    "vitest": "^4.0.16"
   }
 }
