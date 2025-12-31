@@ -9,8 +9,9 @@ const CONFIG_FILE = '.pnpm-dep-source.json'
 
 interface DepConfig {
   localPath: string
-  github?: string       // e.g. "runsascoded/use-hotkeys"
-  npm?: string          // e.g. "@rdub/use-hotkeys" (defaults to package name from local)
+  github?: string       // e.g. "runsascoded/use-kbd"
+  gitlab?: string       // e.g. "runsascoded/screenshots"
+  npm?: string          // e.g. "use-kbd" (defaults to package name from local)
   distBranch?: string   // defaults to "dist"
 }
 
@@ -208,6 +209,23 @@ function resolveGitHubRef(repo: string, ref: string): string {
   return result.stdout.trim()
 }
 
+function resolveGitLabRef(repo: string, ref: string): string {
+  // Use glab api to resolve ref to SHA from GitLab
+  const encodedRepo = encodeURIComponent(repo)
+  const result = spawnSync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`)
+  }
+  try {
+    const data = JSON.parse(result.stdout)
+    return data.id
+  } catch {
+    throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`)
+  }
+}
+
 function getLocalPackageName(localPath: string): string {
   const pkgPath = join(localPath, 'package.json')
   if (!existsSync(pkgPath)) {
@@ -240,10 +258,11 @@ program
 program
   .command('init <local-path>')
   .description('Initialize a dependency in the config')
-  .option('-g, --github <repo>', 'GitHub repo (e.g. "user/repo")')
-  .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
-  .action((localPath: string, options: { github?: string; npm?: string; distBranch: string }) => {
+  .option('-g, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+  .option('-l, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
+  .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
+  .action((localPath: string, options: { github?: string; gitlab?: string; npm?: string; distBranch: string }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const absLocalPath = resolve(localPath)
@@ -255,6 +274,7 @@ program
     config.dependencies[pkgName] = {
       localPath: relLocalPath,
       github: options.github,
+      gitlab: options.gitlab,
       npm: npmName,
       distBranch: options.distBranch,
     }
@@ -263,6 +283,7 @@ program
     console.log(`Initialized ${pkgName}:`)
     console.log(`  Local path: ${relLocalPath}`)
     if (options.github) console.log(`  GitHub: ${options.github}`)
+    if (options.gitlab) console.log(`  GitLab: ${options.gitlab}`)
     console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
   })
@@ -287,6 +308,7 @@ program
       console.log(`  Current: ${current}`)
       console.log(`  Local: ${dep.localPath}`)
       if (dep.github) console.log(`  GitHub: ${dep.github}`)
+      if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
       if (dep.npm) console.log(`  NPM: ${dep.npm}`)
     }
   })
@@ -380,6 +402,66 @@ program
   })
 
 program
+  .command('gitlab <dep> [ref]')
+  .aliases(['gl'])
+  .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
+  .option('-s, --sha', 'Resolve ref to SHA')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .action((depQuery: string, ref: string | undefined, options: { sha: boolean; install: boolean }) => {
+    const projectRoot = findProjectRoot()
+    const config = loadConfig(projectRoot)
+    const [depName, depConfig] = findMatchingDep(config, depQuery)
+
+    if (!depConfig.gitlab) {
+      throw new Error(`No GitLab repo configured for ${depName}. Use "pnpm-dep-source init" with --gitlab`)
+    }
+
+    const distBranch = depConfig.distBranch ?? 'dist'
+
+    let resolvedRef: string
+    if (!ref) {
+      // No ref provided: use dist branch, resolve to SHA
+      resolvedRef = resolveGitLabRef(depConfig.gitlab, distBranch)
+    } else if (options.sha) {
+      // Ref provided with -s: resolve to SHA via GitLab API
+      resolvedRef = resolveGitLabRef(depConfig.gitlab, ref)
+    } else {
+      // Ref provided without -s: use as-is
+      resolvedRef = ref
+    }
+
+    // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
+    // Format: https://gitlab.com/{repo}/-/archive/{ref}/{basename}-{ref}.tar.gz
+    const repoBasename = depConfig.gitlab.split('/').pop()
+    const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`
+
+    const pkg = loadPackageJson(projectRoot)
+    updatePackageJsonDep(pkg, depName, tarballUrl)
+    removePnpmOverride(pkg, depName)
+    savePackageJson(projectRoot, pkg)
+
+    // Remove from pnpm-workspace.yaml
+    const ws = loadWorkspaceYaml(projectRoot)
+    if (ws?.packages) {
+      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
+      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(projectRoot, null)
+      } else {
+        saveWorkspaceYaml(projectRoot, ws)
+      }
+    }
+
+    // Remove from vite.config.ts optimizeDeps.exclude
+    updateViteConfig(projectRoot, depName, false)
+
+    console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+
+    if (options.install) {
+      runPnpmInstall(projectRoot)
+    }
+  })
+
+program
   .command('npm <dep> [version]')
   .alias('n')
   .description('Switch dependency to NPM (defaults to latest)')
@@ -438,6 +520,7 @@ program
       let sourceType = 'unknown'
       if (current === 'workspace:*') sourceType = 'local'
       else if (current.startsWith('github:')) sourceType = 'github'
+      else if (current.includes('gitlab.com') && current.includes('/-/archive/')) sourceType = 'gitlab'
       else if (current.match(/^\^?\d|^latest/)) sourceType = 'npm'
 
       console.log(`${name}: ${sourceType} (${current})`)

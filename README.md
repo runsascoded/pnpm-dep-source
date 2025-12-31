@@ -1,6 +1,6 @@
 # pnpm-dep-source
 
-CLI to switch pnpm dependencies between local, GitHub, and NPM sources.
+CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources.
 
 ## Installation
 
@@ -20,6 +20,9 @@ pnpm-dep-source init ../../path/to/local/pkg -g github-user/repo
 
 # Or with alias
 pds init ../../path/to/local/pkg -g github-user/repo
+
+# With GitLab
+pds init ../../path/to/local/pkg -l gitlab-user/repo
 ```
 
 ### Switch to local development
@@ -34,10 +37,10 @@ This will:
 - Add to `vite.config.ts` `optimizeDeps.exclude` (if vite config exists)
 - Run `pnpm install`
 
-### Switch to GitHub SHA
+### Switch to GitHub
 
 ```bash
-pds github <dep>           # Uses r/dist branch HEAD (resolved to SHA)
+pds github <dep>           # Uses dist branch HEAD (resolved to SHA)
 pds github <dep> main      # Uses specific ref
 pds gh <dep> -s v1.0.0     # Resolves tag to SHA
 ```
@@ -47,6 +50,22 @@ This will:
 - Remove local path from `pnpm-workspace.yaml`
 - Remove from `vite.config.ts` `optimizeDeps.exclude`
 - Run `pnpm install`
+
+### Switch to GitLab
+
+```bash
+pds gitlab <dep>           # Uses dist branch HEAD (resolved to SHA)
+pds gitlab <dep> main      # Uses specific ref
+pds gl <dep> -s v1.0.0     # Resolves tag to SHA
+```
+
+This will:
+- Set `package.json` dependency to GitLab tarball URL
+- Remove local path from `pnpm-workspace.yaml`
+- Remove from `vite.config.ts` `optimizeDeps.exclude`
+- Run `pnpm install`
+
+Note: GitLab uses tarball URLs (e.g. `https://gitlab.com/user/repo/-/archive/ref/repo-ref.tar.gz`) since pnpm doesn't support `gitlab:` prefix.
 
 ### Switch to NPM
 
@@ -80,6 +99,7 @@ The tool stores configuration in `.pnpm-dep-source.json`:
     "@scope/package-name": {
       "localPath": "../../path/to/local",
       "github": "user/repo",
+      "gitlab": "user/repo",
       "npm": "@scope/package-name",
       "distBranch": "dist"
     }
@@ -90,10 +110,19 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 ## Options
 
 - `-I, --no-install`: Skip running `pnpm install` after changes
-- `-s, --sha`: Resolve git ref to SHA (for `github` command)
-- `-g, --github <repo>`: GitHub repo for `init` command
-- `-n, --npm <name>`: NPM package name for `init` command
+- `-s, --sha`: Resolve git ref to SHA (for `github`/`gitlab` commands)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
+- `-g, --github <repo>`: GitHub repo for `init` command
+- `-l, --gitlab <repo>`: GitLab repo for `init` command
+- `-n, --npm <name>`: NPM package name for `init` command
+
+## Requirements
+
+- [gh CLI] for GitHub ref resolution
+- [glab CLI] for GitLab ref resolution
+
+[gh CLI]: https://cli.github.com/
+[glab CLI]: https://gitlab.com/gitlab-org/cli
 
 ## License
 
