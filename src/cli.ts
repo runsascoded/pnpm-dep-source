@@ -5,6 +5,11 @@ import { execSync, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, join, relative, resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const pkgJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'))
+const VERSION = pkgJson.version as string
 
 const CONFIG_FILE = '.pnpm-dep-source.json'
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source')
@@ -335,7 +340,7 @@ function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: stri
 program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
-  .version('0.1.1')
+  .version(VERSION)
 
 program
   .command('init <local-path>')
@@ -757,7 +762,7 @@ program
       realPath = binPath
     }
 
-    console.log(`pnpm-dep-source v0.1.1`)
+    console.log(`pnpm-dep-source v${VERSION}`)
     if (binPath !== realPath) {
       console.log(`  binary: ${binPath} -> ${realPath}`)
     } else {
