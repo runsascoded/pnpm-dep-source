@@ -116,6 +116,40 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 - `-l, --gitlab <repo>`: GitLab repo for `init` command
 - `-n, --npm <name>`: NPM package name for `init` command
 
+## Recommended workflow
+
+1. **Local development**: Use `pds local <dep>` to develop against a local copy
+2. **Integration testing**: Push to GitHub/GitLab, build a dist branch, use `pds gh <dep>` or `pds gl <dep>` to test
+3. **Release**: Publish to NPM, switch consumers to `pds npm <dep>`
+
+### Setting up a dist branch
+
+Add a workflow to your library that builds and pushes to a `dist` branch:
+
+```yaml
+# .github/workflows/build-dist.yml
+name: Build dist branch
+on:
+  workflow_dispatch:
+    inputs:
+      src:
+        description: 'Source ref to build from'
+        required: false
+      dst:
+        description: 'Dist branch name (default: dist)'
+        required: false
+jobs:
+  build-dist:
+    uses: runsascoded/gh-pnpm-dist/.github/workflows/build-dist.yml@v1
+    with:
+      source_ref: ${{ inputs.src }}
+      dist_branch: ${{ inputs.dst }}
+```
+
+See [gh-pnpm-dist] for more options.
+
+[gh-pnpm-dist]: https://github.com/runsascoded/gh-pnpm-dist
+
 ## Requirements
 
 - [gh CLI] for GitHub ref resolution
