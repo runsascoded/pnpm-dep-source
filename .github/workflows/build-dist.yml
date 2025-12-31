@@ -1,0 +1,16 @@
+name: Build dist branch
+on:
+  workflow_dispatch:
+    inputs:
+      src:
+        description: 'Source ref to build from (default: current branch)'
+        required: false
+      dst:
+        description: 'Dist branch name (default: dist)'
+        required: false
+jobs:
+  build-dist:
+    uses: runsascoded/gh-pnpm-dist/.github/workflows/build-dist.yml@v1
+    with:
+      source_ref: ${{ inputs.src }}
+      dist_branch: ${{ inputs.dst }}
