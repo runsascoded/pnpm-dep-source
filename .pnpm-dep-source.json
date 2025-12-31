@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "pnpm-dep-source": {
+      "localPath": ".",
+      "github": "runsascoded/pnpm-dep-source",
+      "npm": "pnpm-dep-source",
+      "distBranch": "dist"
+    }
+  }
+}

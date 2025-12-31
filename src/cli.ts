@@ -2,7 +2,7 @@
 
 import { program } from 'commander'
 import { execSync, spawnSync } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { basename, dirname, join, relative, resolve } from 'path'
 
 const CONFIG_FILE = '.pnpm-dep-source.json'
@@ -240,6 +240,11 @@ function runPnpmInstall(projectRoot: string): void {
   execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' })
 }
 
+function runGlobalInstall(specifier: string): void {
+  console.log(`Running pnpm add -g ${specifier}...`)
+  execSync(`pnpm add -g ${specifier}`, { stdio: 'inherit' })
+}
+
 function getLatestNpmVersion(packageName: string): string {
   const result = spawnSync('npm', ['view', packageName, 'version'], {
     encoding: 'utf-8',
@@ -248,6 +253,37 @@ function getLatestNpmVersion(packageName: string): string {
     throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`)
   }
   return result.stdout.trim()
+}
+
+function getGlobalInstallSource(): { source: string; specifier: string } | null {
+  const result = spawnSync('pnpm', ['list', '-g', 'pnpm-dep-source', '--json'], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    return null
+  }
+  try {
+    const data = JSON.parse(result.stdout)
+    // pnpm list -g --json returns array of global packages
+    const pkg = data[0]?.dependencies?.['pnpm-dep-source']
+    if (!pkg) return null
+
+    const version = pkg.version
+    const from = pkg.from || ''
+
+    if (from.startsWith('file:')) {
+      return { source: 'local', specifier: from }
+    } else if (from.startsWith('github:')) {
+      return { source: 'github', specifier: from }
+    } else if (from.includes('gitlab.com') && from.includes('/-/archive/')) {
+      return { source: 'gitlab', specifier: from }
+    } else if (version) {
+      return { source: 'npm', specifier: version }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 program
@@ -317,11 +353,20 @@ program
   .command('local <dep>')
   .alias('l')
   .description('Switch dependency to local directory')
+  .option('-g, --global', 'Install globally')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, options: { install: boolean }) => {
+  .action((depQuery: string, options: { global: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
+
+    const absLocalPath = resolve(projectRoot, depConfig.localPath)
+
+    if (options.global) {
+      runGlobalInstall(`file:${absLocalPath}`)
+      console.log(`Installed ${depName} globally from local: ${absLocalPath}`)
+      return
+    }
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, 'workspace:*')
@@ -350,9 +395,10 @@ program
   .command('github <dep> [ref]')
   .aliases(['gh', 'g'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
+  .option('-g, --global', 'Install globally')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, ref: string | undefined, options: { sha: boolean; install: boolean }) => {
+  .action((depQuery: string, ref: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
@@ -375,8 +421,16 @@ program
       resolvedRef = ref
     }
 
+    const specifier = `github:${depConfig.github}#${resolvedRef}`
+
+    if (options.global) {
+      runGlobalInstall(specifier)
+      console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`)
+      return
+    }
+
     const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, `github:${depConfig.github}#${resolvedRef}`)
+    updatePackageJsonDep(pkg, depName, specifier)
     removePnpmOverride(pkg, depName)
     savePackageJson(projectRoot, pkg)
 
@@ -405,9 +459,10 @@ program
   .command('gitlab <dep> [ref]')
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
+  .option('-g, --global', 'Install globally')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, ref: string | undefined, options: { sha: boolean; install: boolean }) => {
+  .action((depQuery: string, ref: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
@@ -434,6 +489,12 @@ program
     // Format: https://gitlab.com/{repo}/-/archive/{ref}/{basename}-{ref}.tar.gz
     const repoBasename = depConfig.gitlab.split('/').pop()
     const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`
+
+    if (options.global) {
+      runGlobalInstall(tarballUrl)
+      console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+      return
+    }
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, tarballUrl)
@@ -465,8 +526,9 @@ program
   .command('npm <dep> [version]')
   .alias('n')
   .description('Switch dependency to NPM (defaults to latest)')
+  .option('-g, --global', 'Install globally')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string, version: string | undefined, options: { install: boolean }) => {
+  .action((depQuery: string, version: string | undefined, options: { global: boolean; install: boolean }) => {
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
@@ -474,10 +536,16 @@ program
     const npmName = depConfig.npm ?? depName
     // Resolve latest version from NPM if not specified
     const resolvedVersion = version ?? getLatestNpmVersion(npmName)
-    const specifier = `^${resolvedVersion}`
+    const specifier = `${npmName}@${resolvedVersion}`
+
+    if (options.global) {
+      runGlobalInstall(specifier)
+      console.log(`Installed ${depName} globally from NPM: ${specifier}`)
+      return
+    }
 
     const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, specifier)
+    updatePackageJsonDep(pkg, depName, `^${resolvedVersion}`)
     removePnpmOverride(pkg, depName)
     savePackageJson(projectRoot, pkg)
 
@@ -495,7 +563,7 @@ program
     // Remove from vite.config.ts optimizeDeps.exclude
     updateViteConfig(projectRoot, depName, false)
 
-    console.log(`Switched ${depName} to NPM: ${specifier}`)
+    console.log(`Switched ${depName} to NPM: ^${resolvedVersion}`)
 
     if (options.install) {
       runPnpmInstall(projectRoot)
@@ -525,6 +593,69 @@ program
 
       console.log(`${name}: ${sourceType} (${current})`)
     }
+  })
+
+program
+  .command('info')
+  .alias('i')
+  .description('Show pds version and install source')
+  .action(() => {
+    const binPath = process.argv[1]
+    let realPath: string
+    try {
+      realPath = realpathSync(binPath)
+    } catch {
+      realPath = binPath
+    }
+
+    console.log(`pnpm-dep-source v0.1.1`)
+    if (binPath !== realPath) {
+      console.log(`  binary: ${binPath} -> ${realPath}`)
+    } else {
+      console.log(`  binary: ${binPath}`)
+    }
+
+    // Try pnpm global list first
+    const installSource = getGlobalInstallSource()
+    if (installSource) {
+      console.log(`  source: ${installSource.source} (${installSource.specifier})`)
+      return
+    }
+
+    // Check package.json in the package directory
+    const pkgDir = realPath.includes('/dist/cli.js')
+      ? realPath.replace(/\/dist\/cli\.js$/, '')
+      : dirname(dirname(realPath)) // assume bin/pds structure
+
+    const pkgJsonPath = join(pkgDir, 'package.json')
+    if (existsSync(pkgJsonPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'))
+        const version = pkg.version || 'unknown'
+
+        // Check if this looks like a development checkout (has src/, .git, etc.)
+        const hasSrc = existsSync(join(pkgDir, 'src'))
+        const hasGit = existsSync(join(pkgDir, '.git'))
+
+        if (hasSrc && hasGit) {
+          console.log(`  source: local (${pkgDir})`)
+        } else if (realPath.includes('node_modules')) {
+          // Installed in node_modules - check if it's pnpm, npm, or linked
+          if (realPath.includes('.pnpm')) {
+            console.log(`  source: pnpm (v${version})`)
+          } else {
+            console.log(`  source: npm (v${version})`)
+          }
+        } else {
+          console.log(`  source: v${version} (${pkgDir})`)
+        }
+        return
+      } catch {
+        // Fall through
+      }
+    }
+
+    console.log(`  source: unknown`)
   })
 
 program.parse()
