@@ -576,16 +576,12 @@ program
     else {
         console.log(`  binary: ${binPath}`);
     }
-    // Try pnpm global list first
-    const installSource = getGlobalInstallSource();
-    if (installSource) {
-        console.log(`  source: ${installSource.source} (${installSource.specifier})`);
-        return;
-    }
-    // Check package.json in the package directory
+    // Determine source from the actual binary path first
     const pkgDir = realPath.includes('/dist/cli.js')
         ? realPath.replace(/\/dist\/cli\.js$/, '')
-        : dirname(dirname(realPath)); // assume bin/pds structure
+        : realPath.includes('/cli.js')
+            ? realPath.replace(/\/cli\.js$/, '')
+            : dirname(dirname(realPath)); // assume bin/pds structure
     const pkgJsonPath = join(pkgDir, 'package.json');
     if (existsSync(pkgJsonPath)) {
         try {
@@ -595,25 +591,32 @@ program
             const hasSrc = existsSync(join(pkgDir, 'src'));
             const hasGit = existsSync(join(pkgDir, '.git'));
             if (hasSrc && hasGit) {
-                console.log(`  source: local (${pkgDir})`);
+                console.log(`  source: local development`);
+                return;
             }
-            else if (realPath.includes('node_modules')) {
-                // Installed in node_modules - check if it's pnpm, npm, or linked
-                if (realPath.includes('.pnpm')) {
-                    console.log(`  source: pnpm (v${version})`);
-                }
-                else {
-                    console.log(`  source: npm (v${version})`);
-                }
+            // Check if it's in pnpm global store
+            if (realPath.includes('.pnpm')) {
+                console.log(`  source: pnpm global (${version})`);
+                return;
             }
-            else {
-                console.log(`  source: v${version} (${pkgDir})`);
+            // Check if it's in node_modules
+            if (realPath.includes('node_modules')) {
+                console.log(`  source: npm (${version})`);
+                return;
             }
+            // Has package.json but not in node_modules or local dev
+            console.log(`  source: ${version}`);
             return;
         }
         catch {
             // Fall through
         }
+    }
+    // Fallback: try pnpm global list
+    const installSource = getGlobalInstallSource();
+    if (installSource) {
+        console.log(`  source: ${installSource.source} (${installSource.specifier})`);
+        return;
     }
     console.log(`  source: unknown`);
 });
