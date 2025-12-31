@@ -16,13 +16,13 @@ pnpm add -g pnpm-dep-source
 
 ```bash
 # In your project directory (uses local .pnpm-dep-source.json)
-pds init ../../path/to/local/pkg -G github-user/repo
+pds init ../../path/to/local/pkg -H github-user/repo
 
 # With GitLab
-pds init ../../path/to/local/pkg -l gitlab-user/repo
+pds init ../../path/to/local/pkg -L gitlab-user/repo
 
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
-pds init /path/to/local/cli -g -G github-user/repo
+pds init /path/to/local/cli -g -H github-user/repo
 ```
 
 ### Switch to local development
@@ -116,8 +116,8 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 - `-I, --no-install`: Skip running `pnpm install` after changes
 - `-s, --sha`: Resolve git ref to SHA (for `github`/`gitlab` commands)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
-- `-G, --github <repo>`: GitHub repo for `init` command
-- `-l, --gitlab <repo>`: GitLab repo for `init` command
+- `-H, --github <repo>`: GitHub repo for `init` command
+- `-L, --gitlab <repo>`: GitLab repo for `init` command
 - `-n, --npm <name>`: NPM package name for `init` command
 
 ## Global CLI tools
@@ -126,7 +126,7 @@ For managing globally-installed CLI tools, use `-g` with all commands:
 
 ```bash
 # Initialize a global CLI tool
-pds init /path/to/local/cli -g -G github-user/repo
+pds init /path/to/local/cli -g -H github-user/repo
 
 # List global deps
 pds ls -g
