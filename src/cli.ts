@@ -263,13 +263,56 @@ function resolveGitLabRef(repo: string, ref: string): string {
   }
 }
 
-function getLocalPackageName(localPath: string): string {
+interface LocalPackageInfo {
+  name: string
+  github?: string  // "user/repo" format
+  gitlab?: string  // "user/repo" format
+}
+
+function getLocalPackageInfo(localPath: string): LocalPackageInfo {
   const pkgPath = join(localPath, 'package.json')
   if (!existsSync(pkgPath)) {
     throw new Error(`No package.json found at ${localPath}`)
   }
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
-  return pkg.name
+
+  const result: LocalPackageInfo = { name: pkg.name }
+
+  // Parse repository field
+  const repo = pkg.repository
+  if (repo) {
+    let repoUrl: string | undefined
+    if (typeof repo === 'string') {
+      repoUrl = repo
+    } else if (repo.url) {
+      repoUrl = repo.url
+    }
+
+    if (repoUrl) {
+      // Handle various URL formats:
+      // - git+https://github.com/user/repo.git
+      // - https://github.com/user/repo
+      // - github:user/repo
+      // - git@github.com:user/repo.git
+      const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^github:([\w.-]+)\/([\w.-]+)$/)
+      if (githubMatch) {
+        result.github = `${githubMatch[1]}/${githubMatch[2]}`
+      }
+
+      const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^gitlab:([\w.-]+)\/([\w.-]+)$/)
+      if (gitlabMatch) {
+        result.gitlab = `${gitlabMatch[1]}/${gitlabMatch[2]}`
+      }
+    }
+  }
+
+  return result
+}
+
+function getLocalPackageName(localPath: string): string {
+  return getLocalPackageInfo(localPath).name
 }
 
 function runPnpmInstall(projectRoot: string): void {
@@ -346,29 +389,47 @@ program
   .command('init <local-path>')
   .description('Initialize a dependency in the config')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
+  .option('-f, --force', 'Suppress mismatch warnings')
   .option('-g, --global', 'Add to global config (for CLI tools)')
   .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
-  .action((localPath: string, options: { github?: string; global?: boolean; gitlab?: string; npm?: string; distBranch: string }) => {
+  .action((localPath: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; npm?: string }) => {
     const absLocalPath = resolve(localPath)
-    const pkgName = getLocalPackageName(absLocalPath)
+    const pkgInfo = getLocalPackageInfo(absLocalPath)
+    const pkgName = pkgInfo.name
+
+    // Warn on mismatches (unless --force)
+    if (!options.force) {
+      if (options.github && pkgInfo.github && options.github !== pkgInfo.github) {
+        console.warn(`Warning: GitHub '${options.github}' differs from package.json '${pkgInfo.github}'`)
+      }
+      if (options.gitlab && pkgInfo.gitlab && options.gitlab !== pkgInfo.gitlab) {
+        console.warn(`Warning: GitLab '${options.gitlab}' differs from package.json '${pkgInfo.gitlab}'`)
+      }
+      if (options.npm && options.npm !== pkgName) {
+        console.warn(`Warning: NPM name '${options.npm}' differs from package.json '${pkgName}'`)
+      }
+    }
+
     const npmName = options.npm ?? pkgName
+    const github = options.github ?? pkgInfo.github
+    const gitlab = options.gitlab ?? pkgInfo.gitlab
 
     if (options.global) {
       const config = loadGlobalConfig()
       config.dependencies[pkgName] = {
         localPath: absLocalPath,  // Use absolute path for global config
-        github: options.github,
-        gitlab: options.gitlab,
+        github,
+        gitlab,
         npm: npmName,
         distBranch: options.distBranch,
       }
       saveGlobalConfig(config)
       console.log(`Initialized ${pkgName} (global):`)
       console.log(`  Local path: ${absLocalPath}`)
-      if (options.github) console.log(`  GitHub: ${options.github}`)
-      if (options.gitlab) console.log(`  GitLab: ${options.gitlab}`)
+      if (github) console.log(`  GitHub: ${github}`)
+      if (gitlab) console.log(`  GitLab: ${gitlab}`)
       console.log(`  NPM: ${npmName}`)
       console.log(`  Dist branch: ${options.distBranch}`)
       return
@@ -380,8 +441,8 @@ program
 
     config.dependencies[pkgName] = {
       localPath: relLocalPath,
-      github: options.github,
-      gitlab: options.gitlab,
+      github,
+      gitlab,
       npm: npmName,
       distBranch: options.distBranch,
     }
@@ -389,10 +450,91 @@ program
     saveConfig(projectRoot, config)
     console.log(`Initialized ${pkgName}:`)
     console.log(`  Local path: ${relLocalPath}`)
-    if (options.github) console.log(`  GitHub: ${options.github}`)
-    if (options.gitlab) console.log(`  GitLab: ${options.gitlab}`)
+    if (github) console.log(`  GitHub: ${github}`)
+    if (gitlab) console.log(`  GitLab: ${gitlab}`)
     console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
+  })
+
+program
+  .command('set [dep]')
+  .description('Update fields for an existing dependency')
+  .option('-b, --dist-branch <branch>', 'Set dist branch')
+  .option('-g, --global', 'Update global config')
+  .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
+  .option('-l, --local <path>', 'Set local path (use "" to remove)')
+  .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
+  .option('-n, --npm <name>', 'Set NPM package name')
+  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; global?: boolean; gitlab?: string; local?: string; npm?: string }) => {
+    const isGlobal = options.global
+    const projectRoot = isGlobal ? '' : findProjectRoot()
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
+
+    const [name, dep] = findMatchingDep(config, depQuery)
+    if (!dep) {
+      console.error(`Dependency not found: ${depQuery}`)
+      process.exit(1)
+    }
+
+    let changed = false
+
+    if (options.local !== undefined) {
+      if (options.local === '') {
+        delete (dep as unknown as Record<string, unknown>).localPath
+        console.log(`  Removed local path`)
+      } else {
+        const absPath = resolve(options.local)
+        dep.localPath = isGlobal ? absPath : relative(projectRoot, absPath)
+        console.log(`  Local path: ${dep.localPath}`)
+      }
+      changed = true
+    }
+
+    if (options.github !== undefined) {
+      if (options.github === '') {
+        delete dep.github
+        console.log(`  Removed GitHub`)
+      } else {
+        dep.github = options.github
+        console.log(`  GitHub: ${options.github}`)
+      }
+      changed = true
+    }
+
+    if (options.gitlab !== undefined) {
+      if (options.gitlab === '') {
+        delete dep.gitlab
+        console.log(`  Removed GitLab`)
+      } else {
+        dep.gitlab = options.gitlab
+        console.log(`  GitLab: ${options.gitlab}`)
+      }
+      changed = true
+    }
+
+    if (options.npm !== undefined) {
+      dep.npm = options.npm
+      console.log(`  NPM: ${options.npm}`)
+      changed = true
+    }
+
+    if (options.distBranch !== undefined) {
+      dep.distBranch = options.distBranch
+      console.log(`  Dist branch: ${options.distBranch}`)
+      changed = true
+    }
+
+    if (!changed) {
+      console.log(`No changes specified. Use -l, -H, -L, -n, or -b to update fields.`)
+      return
+    }
+
+    if (isGlobal) {
+      saveGlobalConfig(config)
+    } else {
+      saveConfig(projectRoot, config)
+    }
+    console.log(`Updated ${name}`)
   })
 
 program

@@ -1,6 +1,6 @@
 # pnpm-dep-source
 
-CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources.
+CLI to switch pnpm dependencies between local, GitHub / GitLab, and NPM sources.
 
 ## Installation
 
@@ -15,14 +15,15 @@ pnpm add -g pnpm-dep-source
 ### Initialize a dependency
 
 ```bash
-# In your project directory (uses local .pnpm-dep-source.json)
-pds init ../../path/to/local/pkg -H github-user/repo
+# Auto-detects GitHub/GitLab from local package.json repository field
+pds init ../../path/to/local/pkg
 
-# With GitLab
+# Override or specify repo explicitly
+pds init ../../path/to/local/pkg -H github-user/repo
 pds init ../../path/to/local/pkg -L gitlab-user/repo
 
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
-pds init /path/to/local/cli -g -H github-user/repo
+pds init /path/to/local/cli -g
 ```
 
 ### Switch to local development
@@ -92,6 +93,17 @@ pds s                # Alias
 pds list    # or pds ls
 ```
 
+### Update dependency fields
+
+```bash
+pds set <dep> -H user/repo      # Set GitHub repo
+pds set <dep> -L user/repo      # Set GitLab repo
+pds set <dep> -l ../path        # Set local path
+pds set <dep> -n pkg-name       # Set NPM name
+pds set <dep> -H ""             # Remove GitHub
+pds set -g                      # Update global config (with single dep)
+```
+
 ## Config file
 
 The tool stores configuration in `.pnpm-dep-source.json`:
@@ -116,9 +128,11 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 - `-I, --no-install`: Skip running `pnpm install` after changes
 - `-s, --sha`: Resolve git ref to SHA (for `github`/`gitlab` commands)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
-- `-H, --github <repo>`: GitHub repo for `init` command
-- `-L, --gitlab <repo>`: GitLab repo for `init` command
-- `-n, --npm <name>`: NPM package name for `init` command
+- `-f, --force`: Suppress mismatch warnings in `init`
+- `-H, --github <repo>`: GitHub repo (auto-detected from package.json if not specified)
+- `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
+- `-l, --local <path>`: Local path for `set` command
+- `-n, --npm <name>`: NPM package name (defaults to package name)
 
 ## Global CLI tools
 
