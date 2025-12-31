@@ -83,7 +83,18 @@ function saveWorkspaceYaml(projectRoot, config) {
     writeFileSync(wsPath, content);
 }
 function findMatchingDep(config, query) {
-    const matches = Object.entries(config.dependencies).filter(([name]) => name.toLowerCase().includes(query.toLowerCase()));
+    const deps = Object.entries(config.dependencies);
+    if (!query) {
+        // No query - default to single dep if there's exactly one
+        if (deps.length === 0) {
+            throw new Error('No dependencies configured. Use "pds init <path>" to add one.');
+        }
+        if (deps.length === 1) {
+            return deps[0];
+        }
+        throw new Error(`Multiple dependencies configured. Specify one: ${deps.map(([n]) => n).join(', ')}`);
+    }
+    const matches = deps.filter(([name]) => name.toLowerCase().includes(query.toLowerCase()));
     if (matches.length === 0) {
         throw new Error(`No dependency matching "${query}" found in config`);
     }
@@ -293,7 +304,7 @@ program
     }
 });
 program
-    .command('local <dep>')
+    .command('local [dep]')
     .alias('l')
     .description('Switch dependency to local directory')
     .option('-g, --global', 'Install globally')
@@ -329,15 +340,27 @@ program
     }
 });
 program
-    .command('github <dep> [ref]')
+    .command('github [dep] [ref]')
     .aliases(['gh', 'g'])
     .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally')
     .option('-s, --sha', 'Resolve ref to SHA')
     .option('-I, --no-install', 'Skip running pnpm install')
-    .action((depQuery, ref, options) => {
+    .action((arg1, arg2, options) => {
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
+    const deps = Object.entries(config.dependencies);
+    // If only one arg and exactly one dep configured, treat arg as ref
+    let depQuery;
+    let ref;
+    if (arg1 && !arg2 && deps.length === 1) {
+        depQuery = undefined;
+        ref = arg1;
+    }
+    else {
+        depQuery = arg1;
+        ref = arg2;
+    }
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     if (!depConfig.github) {
         throw new Error(`No GitHub repo configured for ${depName}. Use "pnpm-dep-source init" with --github`);
@@ -385,15 +408,27 @@ program
     }
 });
 program
-    .command('gitlab <dep> [ref]')
+    .command('gitlab [dep] [ref]')
     .aliases(['gl'])
     .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally')
     .option('-s, --sha', 'Resolve ref to SHA')
     .option('-I, --no-install', 'Skip running pnpm install')
-    .action((depQuery, ref, options) => {
+    .action((arg1, arg2, options) => {
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
+    const deps = Object.entries(config.dependencies);
+    // If only one arg and exactly one dep configured, treat arg as ref
+    let depQuery;
+    let ref;
+    if (arg1 && !arg2 && deps.length === 1) {
+        depQuery = undefined;
+        ref = arg1;
+    }
+    else {
+        depQuery = arg1;
+        ref = arg2;
+    }
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     if (!depConfig.gitlab) {
         throw new Error(`No GitLab repo configured for ${depName}. Use "pnpm-dep-source init" with --gitlab`);
@@ -444,14 +479,26 @@ program
     }
 });
 program
-    .command('npm <dep> [version]')
+    .command('npm [dep] [version]')
     .alias('n')
     .description('Switch dependency to NPM (defaults to latest)')
     .option('-g, --global', 'Install globally')
     .option('-I, --no-install', 'Skip running pnpm install')
-    .action((depQuery, version, options) => {
+    .action((arg1, arg2, options) => {
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
+    const deps = Object.entries(config.dependencies);
+    // If only one arg and exactly one dep configured, treat arg as version
+    let depQuery;
+    let version;
+    if (arg1 && !arg2 && deps.length === 1) {
+        depQuery = undefined;
+        version = arg1;
+    }
+    else {
+        depQuery = arg1;
+        version = arg2;
+    }
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     const npmName = depConfig.npm ?? depName;
     // Resolve latest version from NPM if not specified
