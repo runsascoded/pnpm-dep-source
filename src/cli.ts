@@ -294,16 +294,17 @@ function getLocalPackageInfo(localPath: string): LocalPackageInfo {
       // - https://github.com/user/repo
       // - github:user/repo
       // - git@github.com:user/repo.git
-      const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
-        || repoUrl.match(/^github:([\w.-]+)\/([\w.-]+)$/)
+      const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^github:([\w.-]+\/[\w.-]+)$/)
       if (githubMatch) {
-        result.github = `${githubMatch[1]}/${githubMatch[2]}`
+        result.github = githubMatch[1]
       }
 
-      const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
-        || repoUrl.match(/^gitlab:([\w.-]+)\/([\w.-]+)$/)
+      // GitLab supports nested groups: gitlab.com/group/subgroup/repo
+      const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w./-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^gitlab:([\w./-]+)$/)
       if (gitlabMatch) {
-        result.gitlab = `${gitlabMatch[1]}/${gitlabMatch[2]}`
+        result.gitlab = gitlabMatch[1]
       }
     }
   }
