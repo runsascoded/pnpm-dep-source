@@ -379,6 +379,69 @@ describe('pds round-trips', () => {
     })
   })
 
+  describe('init auto-activation', () => {
+    it('activates local mode when init with local path', () => {
+      // Remove existing config to start fresh
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      if (existsSync(configPath)) rmSync(configPath)
+
+      run(`init ${MOCK_DEP_DIR} -I`)
+
+      // Should have set workspace:* in package.json
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
+
+      // Should have created pnpm-workspace.yaml
+      const wsPath = join(TEST_DIR, 'pnpm-workspace.yaml')
+      expect(existsSync(wsPath)).toBe(true)
+      const wsContent = readFileSync(wsPath, 'utf-8')
+      expect(wsContent).toContain('../mock-dep')
+    })
+
+    it('skips activation when dep not in package.json', () => {
+      const newDepDir = join(TEST_DIR, 'new-dep')
+      mkdirSync(newDepDir, { recursive: true })
+      writeJson(join(newDepDir, 'package.json'), {
+        name: '@test/new-dep',
+        version: '1.0.0',
+      })
+
+      // Remove existing config
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      if (existsSync(configPath)) rmSync(configPath)
+
+      const output = run(`init ${newDepDir} -I`)
+
+      // Should log that activation was skipped
+      expect(output).toContain('not in package.json')
+
+      // Config should still be created
+      const config = readJson(configPath)
+      expect(config.dependencies).toHaveProperty('@test/new-dep')
+
+      // But package.json should not be modified (no @test/new-dep entry)
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/new-dep']).toBeUndefined()
+    })
+
+    it('activates after deinit + init cycle', () => {
+      // First init (uses existing config with GitHub)
+      run(`init ${MOCK_DEP_DIR} -H test-org/mock-dep -I`)
+      expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
+
+      // Switch to github
+      run('github mock-dep main -I')
+      expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toContain('github:')
+
+      // Deinit
+      run('deinit mock-dep')
+
+      // Re-init should activate local again
+      run(`init ${MOCK_DEP_DIR} -H test-org/mock-dep -I`)
+      expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
+    })
+  })
+
   describe('deinit command', () => {
     it('removes dependency from config', () => {
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')

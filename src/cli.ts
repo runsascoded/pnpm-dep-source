@@ -178,6 +178,12 @@ function updatePackageJsonDep(
   }
 }
 
+function hasDependency(pkg: Record<string, unknown>, depName: string): boolean {
+  const deps = pkg.dependencies as Record<string, string> | undefined
+  const devDeps = pkg.devDependencies as Record<string, string> | undefined
+  return (deps && depName in deps) || (devDeps && depName in devDeps) || false
+}
+
 function getCurrentSource(pkg: Record<string, unknown>, depName: string): string {
   const deps = pkg.dependencies as Record<string, string> | undefined
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
@@ -451,6 +457,112 @@ function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: stri
   }
 }
 
+// Helper to switch a dependency to local mode
+function switchToLocal(
+  projectRoot: string,
+  depName: string,
+  localPath: string,
+): void {
+  const pkg = loadPackageJson(projectRoot)
+  updatePackageJsonDep(pkg, depName, 'workspace:*')
+  savePackageJson(projectRoot, pkg)
+
+  // Update pnpm-workspace.yaml
+  const ws = loadWorkspaceYaml(projectRoot) ?? { packages: ['.'] }
+  if (!ws.packages) ws.packages = ['.']
+  if (!ws.packages.includes('.')) ws.packages.unshift('.')
+  if (!ws.packages.includes(localPath)) {
+    ws.packages.push(localPath)
+  }
+  saveWorkspaceYaml(projectRoot, ws)
+
+  // Update vite.config.ts
+  updateViteConfig(projectRoot, depName, true)
+
+  console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`)
+}
+
+// Helper to switch a dependency to GitHub mode
+function switchToGitHub(
+  projectRoot: string,
+  depName: string,
+  depConfig: DepConfig,
+  ref?: string,
+): void {
+  if (!depConfig.github) {
+    throw new Error(`No GitHub repo configured for ${depName}`)
+  }
+
+  const distBranch = depConfig.distBranch ?? 'dist'
+  const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch)
+  const specifier = `github:${depConfig.github}#${resolvedRef}`
+
+  const pkg = loadPackageJson(projectRoot)
+  updatePackageJsonDep(pkg, depName, specifier)
+  removePnpmOverride(pkg, depName)
+  savePackageJson(projectRoot, pkg)
+
+  // Remove from pnpm-workspace.yaml
+  if (depConfig.localPath) {
+    const ws = loadWorkspaceYaml(projectRoot)
+    if (ws?.packages) {
+      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
+      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(projectRoot, null)
+      } else {
+        saveWorkspaceYaml(projectRoot, ws)
+      }
+    }
+  }
+
+  // Remove from vite.config.ts optimizeDeps.exclude
+  updateViteConfig(projectRoot, depName, false)
+
+  console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`)
+}
+
+// Helper to switch a dependency to GitLab mode
+function switchToGitLab(
+  projectRoot: string,
+  depName: string,
+  depConfig: DepConfig,
+  ref?: string,
+): void {
+  if (!depConfig.gitlab) {
+    throw new Error(`No GitLab repo configured for ${depName}`)
+  }
+
+  const distBranch = depConfig.distBranch ?? 'dist'
+  const resolvedRef = ref ?? resolveGitLabRef(depConfig.gitlab, distBranch)
+
+  // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
+  const repoBasename = depConfig.gitlab.split('/').pop()
+  const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`
+
+  const pkg = loadPackageJson(projectRoot)
+  updatePackageJsonDep(pkg, depName, tarballUrl)
+  removePnpmOverride(pkg, depName)
+  savePackageJson(projectRoot, pkg)
+
+  // Remove from pnpm-workspace.yaml
+  if (depConfig.localPath) {
+    const ws = loadWorkspaceYaml(projectRoot)
+    if (ws?.packages) {
+      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
+      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(projectRoot, null)
+      } else {
+        saveWorkspaceYaml(projectRoot, ws)
+      }
+    }
+  }
+
+  // Remove from vite.config.ts optimizeDeps.exclude
+  updateViteConfig(projectRoot, depName, false)
+
+  console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+}
+
 program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
@@ -458,27 +570,38 @@ program
 
 program
   .command('init <path-or-url>')
-  .description('Initialize a dependency from local path or repo URL')
+  .description('Initialize a dependency from local path or repo URL and activate it')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
   .option('-f, --force', 'Suppress mismatch warnings')
   .option('-g, --global', 'Add to global config (for CLI tools)')
   .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+  .option('-I, --no-install', 'Skip running pnpm install')
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .action((pathOrUrl: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; local?: string; npm?: string }) => {
+  .action((pathOrUrl: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
     const isUrl = isRepoUrl(pathOrUrl)
     let pkgInfo: PackageInfo
     let localPath: string | undefined
+    let activateSource: 'local' | 'github' | 'gitlab' | undefined
 
     if (isUrl) {
       // Fetch package.json from remote repo
       pkgInfo = getRemotePackageInfo(pathOrUrl)
       localPath = options.local ? resolve(options.local) : undefined
+      // Determine which source to activate based on URL type
+      if (localPath) {
+        activateSource = 'local'
+      } else if (pkgInfo.github) {
+        activateSource = 'github'
+      } else if (pkgInfo.gitlab) {
+        activateSource = 'gitlab'
+      }
     } else {
       // Read from local path
       localPath = resolve(pathOrUrl)
       pkgInfo = getLocalPackageInfo(localPath)
+      activateSource = 'local'
     }
 
     const pkgName = pkgInfo.name
@@ -516,6 +639,12 @@ program
       if (gitlab) console.log(`  GitLab: ${gitlab}`)
       console.log(`  NPM: ${npmName}`)
       console.log(`  Dist branch: ${options.distBranch}`)
+
+      // Activate for global: install from local path if provided
+      if (localPath) {
+        runGlobalInstall(`file:${localPath}`)
+        console.log(`Installed ${pkgName} globally from local: ${localPath}`)
+      }
       return
     }
 
@@ -523,13 +652,14 @@ program
     const config = loadConfig(projectRoot)
     const relLocalPath = localPath ? relative(projectRoot, localPath) : undefined
 
-    config.dependencies[pkgName] = {
+    const depConfig: DepConfig = {
       localPath: relLocalPath,
       github,
       gitlab,
       npm: npmName,
       distBranch: options.distBranch,
     }
+    config.dependencies[pkgName] = depConfig
 
     saveConfig(projectRoot, config)
     console.log(`Initialized ${pkgName}:`)
@@ -538,6 +668,30 @@ program
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
     console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
+
+    // Activate the dependency based on input type (only if dep exists in package.json)
+    const pkg = loadPackageJson(projectRoot)
+    if (!hasDependency(pkg, pkgName)) {
+      console.log(`(${pkgName} not in package.json, skipping activation)`)
+      return
+    }
+
+    if (activateSource === 'local' && relLocalPath) {
+      switchToLocal(projectRoot, pkgName, relLocalPath)
+      if (options.install) {
+        runPnpmInstall(projectRoot)
+      }
+    } else if (activateSource === 'github' && github) {
+      switchToGitHub(projectRoot, pkgName, depConfig)
+      if (options.install) {
+        runPnpmInstall(projectRoot)
+      }
+    } else if (activateSource === 'gitlab' && gitlab) {
+      switchToGitLab(projectRoot, pkgName, depConfig)
+      if (options.install) {
+        runPnpmInstall(projectRoot)
+      }
+    }
   })
 
 program

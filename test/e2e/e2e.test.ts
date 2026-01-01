@@ -385,37 +385,57 @@ describe('e2e: real packages', () => {
   })
 
   describe('init from URL', () => {
-    it('initializes from GitHub URL', () => {
-      run('init https://github.com/runsascoded/use-kbd')
+    it('initializes and auto-activates from GitHub URL', () => {
+      run('init https://github.com/runsascoded/use-kbd -I')
 
+      // Config should be created
       const config = readJson(configPath)
       const dep = (config.dependencies as Record<string, { github?: string; npm?: string; localPath?: string }>)['use-kbd']
       expect(dep.github).toBe('runsascoded/use-kbd')
       expect(dep.npm).toBe('use-kbd')
       expect(dep.localPath).toBeUndefined()
-    })
 
-    it('initializes from GitHub URL with local path', () => {
-      run(`init https://github.com/runsascoded/use-kbd -l ${USE_KBD_DIR}`)
-
-      const config = readJson(configPath)
-      const dep = (config.dependencies as Record<string, { github?: string; localPath?: string }>)['use-kbd']
-      expect(dep.github).toBe('runsascoded/use-kbd')
-      expect(dep.localPath).toBe(USE_KBD_DIR)
-    })
-
-    it('switches to github mode when initialized from URL', () => {
-      run('init https://github.com/runsascoded/use-kbd')
-      run('github dist -I')
-
+      // Should have auto-activated to GitHub mode
       const pkg = readJson(pkgPath)
       expect((pkg.dependencies as Record<string, string>)['use-kbd']).toMatch(/^github:runsascoded\/use-kbd#/)
     })
 
+    it('initializes and auto-activates local mode when -l provided', () => {
+      run(`init https://github.com/runsascoded/use-kbd -l ${USE_KBD_DIR} -I`)
+
+      // Config should have localPath
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { github?: string; localPath?: string }>)['use-kbd']
+      expect(dep.github).toBe('runsascoded/use-kbd')
+      expect(dep.localPath).toBe(USE_KBD_DIR)
+
+      // Should have auto-activated to local mode
+      const pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
+
+      // Should have created pnpm-workspace.yaml
+      const wsPath = join(REAL_PROJECT_DIR, 'pnpm-workspace.yaml')
+      expect(existsSync(wsPath)).toBe(true)
+    })
+
     it('errors when switching to local mode without localPath', () => {
-      run('init https://github.com/runsascoded/use-kbd')
+      run('init https://github.com/runsascoded/use-kbd -I')
 
       expect(() => run('local -I')).toThrow(/No local path configured/)
+    })
+  })
+
+  describe('init from local path', () => {
+    it('auto-activates local mode', () => {
+      run(`init ${USE_KBD_DIR} -I`)
+
+      // Should have auto-activated to local mode
+      const pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
+
+      // Should have created pnpm-workspace.yaml
+      const wsPath = join(REAL_PROJECT_DIR, 'pnpm-workspace.yaml')
+      expect(existsSync(wsPath)).toBe(true)
     })
   })
 
