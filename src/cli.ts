@@ -913,28 +913,17 @@ program
   })
 
 program
-  .command('github [dep] [ref]')
+  .command('github [dep]')
   .aliases(['gh', 'g'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally (uses global config)')
+  .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
+  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; sha: boolean; install: boolean }) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const deps = Object.entries(config.dependencies)
-
-    // If only one arg and exactly one dep configured, treat arg as ref
-    let depQuery: string | undefined
-    let ref: string | undefined
-    if (arg1 && !arg2 && deps.length === 1) {
-      depQuery = undefined
-      ref = arg1
-    } else {
-      depQuery = arg1
-      ref = arg2
-    }
-
     const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const ref = options.ref
 
     if (!depConfig.github) {
       throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`)
@@ -991,28 +980,17 @@ program
   })
 
 program
-  .command('gitlab [dep] [ref]')
+  .command('gitlab [dep]')
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally (uses global config)')
+  .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
   .option('-s, --sha', 'Resolve ref to SHA')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; sha: boolean; install: boolean }) => {
+  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; sha: boolean; install: boolean }) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const deps = Object.entries(config.dependencies)
-
-    // If only one arg and exactly one dep configured, treat arg as ref
-    let depQuery: string | undefined
-    let ref: string | undefined
-    if (arg1 && !arg2 && deps.length === 1) {
-      depQuery = undefined
-      ref = arg1
-    } else {
-      depQuery = arg1
-      ref = arg2
-    }
-
     const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const ref = options.ref
 
     if (!depConfig.gitlab) {
       throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`)
