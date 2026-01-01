@@ -274,4 +274,108 @@ describe('pds round-trips', () => {
       expect(() => run('local -I')).toThrow(/Multiple dependencies configured/)
     })
   })
+
+  describe('set command', () => {
+    it('updates github field', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('set mock-dep -H new-org/new-repo')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { github?: string }>)['@test/mock-dep'].github).toBe('new-org/new-repo')
+    })
+
+    it('updates gitlab field', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('set mock-dep -L gitlab-org/repo')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { gitlab?: string }>)['@test/mock-dep'].gitlab).toBe('gitlab-org/repo')
+    })
+
+    it('updates local path', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('set mock-dep -l ../other-path')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { localPath: string }>)['@test/mock-dep'].localPath).toBe('../other-path')
+    })
+
+    it('removes field with empty string', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      // First add gitlab
+      run('set mock-dep -L some-org/repo')
+      let config = readJson(configPath)
+      expect((config.dependencies as Record<string, { gitlab?: string }>)['@test/mock-dep'].gitlab).toBe('some-org/repo')
+
+      // Then remove it
+      run('set mock-dep -L ""')
+      config = readJson(configPath)
+      expect((config.dependencies as Record<string, { gitlab?: string }>)['@test/mock-dep'].gitlab).toBeUndefined()
+    })
+
+    it('updates multiple fields at once', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('set mock-dep -H multi/repo -L multi/gitlab -b main')
+
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { github?: string; gitlab?: string; distBranch?: string }>)['@test/mock-dep']
+      expect(dep.github).toBe('multi/repo')
+      expect(dep.gitlab).toBe('multi/gitlab')
+      expect(dep.distBranch).toBe('main')
+    })
+
+    it('works with single-dep default', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('set -H default-org/repo')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { github?: string }>)['@test/mock-dep'].github).toBe('default-org/repo')
+    })
+  })
+
+  describe('init auto-detect', () => {
+    it('auto-detects github from package.json repository field', () => {
+      // Create a mock dep with repository field
+      const mockDepWithRepo = join(TEST_DIR, 'dep-with-repo')
+      mkdirSync(mockDepWithRepo, { recursive: true })
+      writeJson(join(mockDepWithRepo, 'package.json'), {
+        name: '@test/auto-dep',
+        version: '1.0.0',
+        repository: {
+          type: 'git',
+          url: 'git+https://github.com/auto-org/auto-repo.git',
+        },
+      })
+
+      run(`init ${mockDepWithRepo}`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { github?: string; localPath: string }>)['@test/auto-dep']
+      expect(dep.github).toBe('auto-org/auto-repo')
+      expect(dep.localPath).toBe('dep-with-repo')
+    })
+
+    it('uses explicit -H over auto-detected', () => {
+      const mockDepWithRepo = join(TEST_DIR, 'dep-with-repo2')
+      mkdirSync(mockDepWithRepo, { recursive: true })
+      writeJson(join(mockDepWithRepo, 'package.json'), {
+        name: '@test/override-dep',
+        version: '1.0.0',
+        repository: 'github:original/repo',
+      })
+
+      run(`init ${mockDepWithRepo} -H explicit/repo -f`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { github?: string }>)['@test/override-dep'].github).toBe('explicit/repo')
+    })
+  })
 })

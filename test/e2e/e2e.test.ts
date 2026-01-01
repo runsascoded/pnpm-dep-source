@@ -299,3 +299,126 @@ describe('e2e: project-level installs', () => {
     })
   })
 })
+
+describe('e2e: real packages', () => {
+  const REAL_PROJECT_DIR = '/real-project'
+  const USE_KBD_DIR = '/use-kbd'
+  const pkgPath = join(REAL_PROJECT_DIR, 'package.json')
+  const configPath = join(REAL_PROJECT_DIR, '.pnpm-dep-source.json')
+
+  function run(args: string): string {
+    return execSync(`pds ${args}`, { cwd: REAL_PROJECT_DIR, encoding: 'utf-8' })
+  }
+
+  function git(args: string, cwd: string): string {
+    return execSync(`git ${args}`, { cwd, encoding: 'utf-8' })
+  }
+
+  beforeAll(() => {
+    // Create project directory
+    mkdirSync(REAL_PROJECT_DIR, { recursive: true })
+
+    // Clone use-kbd (shallow)
+    if (!existsSync(USE_KBD_DIR)) {
+      execSync(`git clone --depth 1 https://github.com/runsascoded/use-kbd.git ${USE_KBD_DIR}`, { encoding: 'utf-8' })
+    }
+  })
+
+  beforeEach(() => {
+    // Reset project state
+    if (existsSync(pkgPath)) rmSync(pkgPath)
+    if (existsSync(configPath)) rmSync(configPath)
+
+    writeJson(pkgPath, {
+      name: 'real-test-project',
+      version: '1.0.0',
+      dependencies: {
+        'use-kbd': '^0.3.0',
+      },
+    })
+  })
+
+  afterEach(() => {
+    if (existsSync(configPath)) rmSync(configPath)
+    const wsPath = join(REAL_PROJECT_DIR, 'pnpm-workspace.yaml')
+    if (existsSync(wsPath)) rmSync(wsPath)
+  })
+
+  describe('auto-detect from package.json', () => {
+    it('detects github from use-kbd repository field', () => {
+      run(`init ${USE_KBD_DIR}`)
+
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { github?: string; npm?: string }>)['use-kbd']
+      expect(dep.github).toBe('runsascoded/use-kbd')
+      expect(dep.npm).toBe('use-kbd')
+    })
+  })
+
+  describe('set command', () => {
+    beforeEach(() => {
+      run(`init ${USE_KBD_DIR}`)
+    })
+
+    it('updates github field', () => {
+      run('set use-kbd -H other/repo')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { github?: string }>)['use-kbd'].github).toBe('other/repo')
+    })
+
+    it('adds gitlab field', () => {
+      run('set use-kbd -L gitlab-mirror/use-kbd')
+
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { github?: string; gitlab?: string }>)['use-kbd']
+      expect(dep.github).toBe('runsascoded/use-kbd')
+      expect(dep.gitlab).toBe('gitlab-mirror/use-kbd')
+    })
+
+    it('removes field with empty string', () => {
+      run('set use-kbd -H ""')
+
+      const config = readJson(configPath)
+      expect((config.dependencies as Record<string, { github?: string }>)['use-kbd'].github).toBeUndefined()
+    })
+  })
+
+  describe('mode switching with real package', () => {
+    beforeEach(() => {
+      run(`init ${USE_KBD_DIR}`)
+    })
+
+    it('switches to local mode', () => {
+      run('local -I')
+
+      const pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
+    })
+
+    it('switches to npm mode', () => {
+      run('npm 0.3.0 -I')
+
+      const pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('^0.3.0')
+    })
+
+    it('switches to github mode', () => {
+      run('github dist -I')
+
+      const pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toMatch(/^github:runsascoded\/use-kbd#/)
+    })
+
+    it('round-trips local → npm → local', () => {
+      run('local -I')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
+
+      run('npm 0.3.0 -I')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['use-kbd']).toBe('^0.3.0')
+
+      run('local -I')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
+    })
+  })
+})
