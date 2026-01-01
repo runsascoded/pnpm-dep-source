@@ -6,7 +6,22 @@ import { homedir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkgJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+// Find package.json by walking up from current file
+// (handles both dev mode where cli is in dist/, and dist branch where cli is at root)
+function findOwnPackageJson() {
+    let dir = __dirname;
+    while (dir !== dirname(dir)) {
+        const pkgPath = join(dir, 'package.json');
+        if (existsSync(pkgPath)) {
+            const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+            if (pkg.name === 'pnpm-dep-source')
+                return pkgPath;
+        }
+        dir = dirname(dir);
+    }
+    throw new Error('Could not find pnpm-dep-source package.json');
+}
+const pkgJson = JSON.parse(readFileSync(findOwnPackageJson(), 'utf-8'));
 const VERSION = pkgJson.version;
 const CONFIG_FILE = '.pnpm-dep-source.json';
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source');
