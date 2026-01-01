@@ -145,11 +145,11 @@ describe('e2e: project-level installs', () => {
 
   describe('ls', () => {
     it('shows dependency info', () => {
-      pds(`init ${MOCK_DEP_DIR} -H test-org/mock-dep`)
+      pds(`init ${MOCK_DEP_DIR} -H test-org/mock-dep -I`)
       const output = pds('ls')
 
       expect(output).toContain('@test/mock-dep')
-      expect(output).toContain('Current: ^1.0.0')
+      expect(output).toContain('Current: workspace:*')  // init auto-activates to local
       expect(output).toContain('../mock-dep')
       expect(output).toContain('test-org/mock-dep')
     })
