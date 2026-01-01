@@ -51,6 +51,16 @@ This will:
 - Add to `vite.config.ts` `optimizeDeps.exclude` (if vite config exists)
 - Run `pnpm install`
 
+### Switch to GitHub or GitLab (auto-detect)
+
+```bash
+pds g [dep]                   # Auto-detects GitHub or GitLab (uses dist branch HEAD)
+pds g [dep] -r v1.0.0         # Resolves ref to SHA
+pds g [dep] -R dist           # Uses ref as-is (pin to branch name)
+```
+
+Errors if neither or both are configured; use `pds gh` or `pds gl` explicitly in that case.
+
 ### Switch to GitHub
 
 ```bash
