@@ -55,8 +55,8 @@ This will:
 
 ```bash
 pds github [dep]              # Uses dist branch HEAD (resolved to SHA)
-pds github [dep] -r <ref>     # Uses specific ref
-pds gh [dep] -r v1.0.0 -s     # Resolves tag to SHA
+pds gh [dep] -r v1.0.0        # Resolves ref to SHA
+pds gh [dep] -R dist          # Uses ref as-is (pin to branch name)
 ```
 
 This will:
@@ -69,8 +69,8 @@ This will:
 
 ```bash
 pds gitlab [dep]              # Uses dist branch HEAD (resolved to SHA)
-pds gitlab [dep] -r <ref>     # Uses specific ref
-pds gl [dep] -r v1.0.0 -s     # Resolves tag to SHA
+pds gl [dep] -r v1.0.0        # Resolves ref to SHA
+pds gl [dep] -R dist          # Uses ref as-is (pin to branch name)
 ```
 
 This will:
@@ -114,6 +114,15 @@ pds set <dep> -H ""             # Remove GitHub
 pds set -g                      # Update global config (with single dep)
 ```
 
+### Remove a dependency from config
+
+```bash
+pds deinit [dep]    # or pds rm [dep]
+pds rm -g           # Remove from global config
+```
+
+This removes the dependency from `.pnpm-dep-source.json` but does not modify `package.json`.
+
 ## Config file
 
 The tool stores configuration in `.pnpm-dep-source.json`:
@@ -134,15 +143,16 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 
 ## Options
 
-- `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools
-- `-I, --no-install`: Skip running `pnpm install` after changes
-- `-s, --sha`: Resolve git ref to SHA (for `github`/`gitlab` commands)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
 - `-f, --force`: Suppress mismatch warnings in `init`
+- `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools
 - `-H, --github <repo>`: GitHub repo (auto-detected from package.json if not specified)
+- `-I, --no-install`: Skip running `pnpm install` after changes
+- `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
 - `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
-- `-l, --local <path>`: Local path for `set` command
 - `-n, --npm <name>`: NPM package name (defaults to package name)
+- `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab` commands)
+- `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)
 
 ## Global CLI tools
 
@@ -204,6 +214,29 @@ See [gh-pnpm-dist] for more options.
 
 [gh CLI]: https://cli.github.com/
 [glab CLI]: https://gitlab.com/gitlab-org/cli
+
+## Self-hosting
+
+`pds` can manage itself! Clone the repo and use the global (`-g`) commands to switch between local development, dist branch testing, and NPM releases:
+
+```bash
+# Clone and initialize
+git clone https://github.com/runsascoded/pnpm-dep-source.git
+cd pnpm-dep-source
+pnpm install && pnpm build
+
+# Register pds as its own global dependency
+pds init . -g
+
+# Develop locally
+pds l -g    # installs from local ./dist
+
+# Test dist branch
+pds gh -g   # installs from GitHub dist branch
+
+# Use NPM release
+pds n -g    # installs from NPM
+```
 
 ## License
 

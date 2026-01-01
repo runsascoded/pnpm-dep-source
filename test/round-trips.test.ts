@@ -107,7 +107,7 @@ describe('pds round-trips', () => {
       run('local mock-dep -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(true)
 
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
     })
 
@@ -122,7 +122,7 @@ describe('pds round-trips', () => {
       }
       writeJson(pkgPath, pkg)
 
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
 
       const updatedPkg = readJson(pkgPath)
       const pnpm = updatedPkg.pnpm as Record<string, unknown> | undefined
@@ -133,7 +133,7 @@ describe('pds round-trips', () => {
       const viteOriginal = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
 
       run('local mock-dep -I')
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
 
       const viteAfter = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
       expect(viteAfter).toBe(viteOriginal)
@@ -182,7 +182,7 @@ describe('pds round-trips', () => {
     it('preserves clean state', () => {
       const pkgPath = join(TEST_DIR, 'package.json')
 
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
       const pkgAfterGh = readJson(pkgPath)
       expect((pkgAfterGh.dependencies as Record<string, string>)['@test/mock-dep']).toContain('github:')
 
@@ -194,13 +194,13 @@ describe('pds round-trips', () => {
 
   describe('github → local round-trip', () => {
     it('adds then removes workspace config', () => {
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
 
       run('local mock-dep -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(true)
 
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
     })
   })
@@ -230,7 +230,7 @@ describe('pds round-trips', () => {
       }
       writeJson(pkgPath, pkg)
 
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
 
       const updatedPkg = readJson(pkgPath)
       const pnpm = updatedPkg.pnpm as Record<string, unknown>
@@ -247,8 +247,8 @@ describe('pds round-trips', () => {
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
     })
 
-    it('uses -r flag for ref when one dep configured', () => {
-      run('github -r main -I')
+    it('uses -R flag for raw ref when one dep configured', () => {
+      run('github -R main -I')
 
       const pkg = readJson(join(TEST_DIR, 'package.json'))
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
@@ -430,7 +430,7 @@ describe('pds round-trips', () => {
       expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
 
       // Switch to github
-      run('github mock-dep -r main -I')
+      run('github mock-dep -R main -I')
       expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toContain('github:')
 
       // Deinit

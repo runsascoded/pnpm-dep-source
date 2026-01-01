@@ -933,30 +933,33 @@ program
   .aliases(['gh', 'g'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally (uses global config)')
-  .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
-  .option('-s, --sha', 'Resolve ref to SHA')
+  .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
+  .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; sha: boolean; install: boolean }) => {
+  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; rawRef?: string; install: boolean }) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const [depName, depConfig] = findMatchingDep(config, depQuery)
-    const ref = options.ref
 
     if (!depConfig.github) {
       throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`)
     }
 
+    if (options.ref && options.rawRef) {
+      throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
+    }
+
     const distBranch = depConfig.distBranch ?? 'dist'
 
     let resolvedRef: string
-    if (!ref) {
+    if (options.rawRef) {
+      // Raw ref: use as-is
+      resolvedRef = options.rawRef
+    } else if (options.ref) {
+      // Ref provided: resolve to SHA
+      resolvedRef = resolveGitHubRef(depConfig.github, options.ref)
+    } else {
       // No ref provided: use dist branch, resolve to SHA
       resolvedRef = resolveGitHubRef(depConfig.github, distBranch)
-    } else if (options.sha) {
-      // Ref provided with -s: resolve to SHA via GitHub API
-      resolvedRef = resolveGitHubRef(depConfig.github, ref)
-    } else {
-      // Ref provided without -s: use as-is
-      resolvedRef = ref
     }
 
     const specifier = `github:${depConfig.github}#${resolvedRef}`
@@ -1000,30 +1003,33 @@ program
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally (uses global config)')
-  .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
-  .option('-s, --sha', 'Resolve ref to SHA')
+  .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
+  .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; sha: boolean; install: boolean }) => {
+  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; rawRef?: string; install: boolean }) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const [depName, depConfig] = findMatchingDep(config, depQuery)
-    const ref = options.ref
 
     if (!depConfig.gitlab) {
       throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`)
     }
 
+    if (options.ref && options.rawRef) {
+      throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
+    }
+
     const distBranch = depConfig.distBranch ?? 'dist'
 
     let resolvedRef: string
-    if (!ref) {
+    if (options.rawRef) {
+      // Raw ref: use as-is
+      resolvedRef = options.rawRef
+    } else if (options.ref) {
+      // Ref provided: resolve to SHA
+      resolvedRef = resolveGitLabRef(depConfig.gitlab, options.ref)
+    } else {
       // No ref provided: use dist branch, resolve to SHA
       resolvedRef = resolveGitLabRef(depConfig.gitlab, distBranch)
-    } else if (options.sha) {
-      // Ref provided with -s: resolve to SHA via GitLab API
-      resolvedRef = resolveGitLabRef(depConfig.gitlab, ref)
-    } else {
-      // Ref provided without -s: use as-is
-      resolvedRef = ref
     }
 
     // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
