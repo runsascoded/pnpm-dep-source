@@ -4,6 +4,10 @@ import { execSync, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
+import { fileURLToPath } from 'url';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkgJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+const VERSION = pkgJson.version;
 const CONFIG_FILE = '.pnpm-dep-source.json';
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source');
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json');
@@ -131,6 +135,11 @@ function updatePackageJsonDep(pkg, depName, specifier) {
         throw new Error(`Dependency "${depName}" not found in package.json`);
     }
 }
+function hasDependency(pkg, depName) {
+    const deps = pkg.dependencies;
+    const devDeps = pkg.devDependencies;
+    return (deps && depName in deps) || (devDeps && depName in devDeps) || false;
+}
 function getCurrentSource(pkg, depName) {
     const deps = pkg.dependencies;
     const devDeps = pkg.devDependencies;
@@ -200,13 +209,109 @@ function resolveGitLabRef(repo, ref) {
         throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`);
     }
 }
-function getLocalPackageName(localPath) {
+// Parse GitHub/GitLab repo from a URL string
+function parseRepoUrl(repoUrl) {
+    const result = {};
+    // Handle various URL formats:
+    // - git+https://github.com/user/repo.git
+    // - https://github.com/user/repo
+    // - github:user/repo
+    // - git@github.com:user/repo.git
+    const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^github:([\w.-]+\/[\w.-]+)$/);
+    if (githubMatch) {
+        result.github = githubMatch[1];
+    }
+    // GitLab supports nested groups: gitlab.com/group/subgroup/repo
+    const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w./-]+?)(?:\.git)?$/)
+        || repoUrl.match(/^gitlab:([\w./-]+)$/);
+    if (gitlabMatch) {
+        result.gitlab = gitlabMatch[1];
+    }
+    return result;
+}
+// Parse package.json content into PackageInfo
+function parsePackageJson(pkg) {
+    const result = { name: pkg.name };
+    const repo = pkg.repository;
+    if (repo) {
+        let repoUrl;
+        if (typeof repo === 'string') {
+            repoUrl = repo;
+        }
+        else if (typeof repo === 'object' && repo !== null && 'url' in repo) {
+            repoUrl = repo.url;
+        }
+        if (repoUrl) {
+            const parsed = parseRepoUrl(repoUrl);
+            result.github = parsed.github;
+            result.gitlab = parsed.gitlab;
+        }
+    }
+    return result;
+}
+// Fetch package.json from GitHub repo
+function fetchGitHubPackageJson(repo, ref = 'HEAD') {
+    const result = spawnSync('gh', ['api', `repos/${repo}/contents/package.json`, '--jq', '.content'], {
+        encoding: 'utf-8',
+    });
+    if (result.status !== 0) {
+        throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`);
+    }
+    const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8');
+    return JSON.parse(content);
+}
+// Fetch package.json from GitLab repo
+function fetchGitLabPackageJson(repo, ref = 'HEAD') {
+    const encodedPath = encodeURIComponent(repo);
+    const result = spawnSync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], {
+        encoding: 'utf-8',
+    });
+    if (result.status !== 0) {
+        throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`);
+    }
+    return JSON.parse(result.stdout);
+}
+// Get package info from local path
+function getLocalPackageInfo(localPath) {
     const pkgPath = join(localPath, 'package.json');
     if (!existsSync(pkgPath)) {
         throw new Error(`No package.json found at ${localPath}`);
     }
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg.name;
+    return parsePackageJson(pkg);
+}
+// Get package info from URL (GitHub or GitLab)
+function getRemotePackageInfo(url) {
+    const parsed = parseRepoUrl(url);
+    let pkg;
+    if (parsed.github) {
+        pkg = fetchGitHubPackageJson(parsed.github);
+    }
+    else if (parsed.gitlab) {
+        pkg = fetchGitLabPackageJson(parsed.gitlab);
+    }
+    else {
+        throw new Error(`Cannot parse repository from URL: ${url}`);
+    }
+    const info = parsePackageJson(pkg);
+    // Override with the URL we were given (it's authoritative)
+    return {
+        ...info,
+        github: parsed.github ?? info.github,
+        gitlab: parsed.gitlab ?? info.gitlab,
+    };
+}
+// Check if argument looks like a URL rather than a local path
+function isRepoUrl(arg) {
+    return arg.startsWith('http://') ||
+        arg.startsWith('https://') ||
+        arg.startsWith('github:') ||
+        arg.startsWith('gitlab:') ||
+        arg.startsWith('git@');
+}
+function getLocalPackageName(localPath) {
+    return getLocalPackageInfo(localPath).name;
 }
 function runPnpmInstall(projectRoot) {
     console.log('Running pnpm install...');
@@ -270,61 +375,325 @@ function getGlobalInstallSource(packageName = 'pnpm-dep-source') {
         return null;
     }
 }
+// Helper to switch a dependency to local mode
+function switchToLocal(projectRoot, depName, localPath) {
+    const pkg = loadPackageJson(projectRoot);
+    updatePackageJsonDep(pkg, depName, 'workspace:*');
+    savePackageJson(projectRoot, pkg);
+    // Update pnpm-workspace.yaml
+    const ws = loadWorkspaceYaml(projectRoot) ?? { packages: ['.'] };
+    if (!ws.packages)
+        ws.packages = ['.'];
+    if (!ws.packages.includes('.'))
+        ws.packages.unshift('.');
+    if (!ws.packages.includes(localPath)) {
+        ws.packages.push(localPath);
+    }
+    saveWorkspaceYaml(projectRoot, ws);
+    // Update vite.config.ts
+    updateViteConfig(projectRoot, depName, true);
+    console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`);
+}
+// Helper to switch a dependency to GitHub mode
+function switchToGitHub(projectRoot, depName, depConfig, ref) {
+    if (!depConfig.github) {
+        throw new Error(`No GitHub repo configured for ${depName}`);
+    }
+    const distBranch = depConfig.distBranch ?? 'dist';
+    const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch);
+    const specifier = `github:${depConfig.github}#${resolvedRef}`;
+    const pkg = loadPackageJson(projectRoot);
+    updatePackageJsonDep(pkg, depName, specifier);
+    removePnpmOverride(pkg, depName);
+    savePackageJson(projectRoot, pkg);
+    // Remove from pnpm-workspace.yaml
+    if (depConfig.localPath) {
+        const ws = loadWorkspaceYaml(projectRoot);
+        if (ws?.packages) {
+            ws.packages = ws.packages.filter(p => p !== depConfig.localPath);
+            if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+                saveWorkspaceYaml(projectRoot, null);
+            }
+            else {
+                saveWorkspaceYaml(projectRoot, ws);
+            }
+        }
+    }
+    // Remove from vite.config.ts optimizeDeps.exclude
+    updateViteConfig(projectRoot, depName, false);
+    console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`);
+}
+// Helper to switch a dependency to GitLab mode
+function switchToGitLab(projectRoot, depName, depConfig, ref) {
+    if (!depConfig.gitlab) {
+        throw new Error(`No GitLab repo configured for ${depName}`);
+    }
+    const distBranch = depConfig.distBranch ?? 'dist';
+    const resolvedRef = ref ?? resolveGitLabRef(depConfig.gitlab, distBranch);
+    // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
+    const repoBasename = depConfig.gitlab.split('/').pop();
+    const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`;
+    const pkg = loadPackageJson(projectRoot);
+    updatePackageJsonDep(pkg, depName, tarballUrl);
+    removePnpmOverride(pkg, depName);
+    savePackageJson(projectRoot, pkg);
+    // Remove from pnpm-workspace.yaml
+    if (depConfig.localPath) {
+        const ws = loadWorkspaceYaml(projectRoot);
+        if (ws?.packages) {
+            ws.packages = ws.packages.filter(p => p !== depConfig.localPath);
+            if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+                saveWorkspaceYaml(projectRoot, null);
+            }
+            else {
+                saveWorkspaceYaml(projectRoot, ws);
+            }
+        }
+    }
+    // Remove from vite.config.ts optimizeDeps.exclude
+    updateViteConfig(projectRoot, depName, false);
+    console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`);
+}
 program
     .name('pnpm-dep-source')
     .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
-    .version('0.1.1');
+    .version(VERSION);
 program
-    .command('init <local-path>')
-    .description('Initialize a dependency in the config')
+    .command('init <path-or-url>')
+    .description('Initialize a dependency from local path or repo URL and activate it')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
+    .option('-f, --force', 'Suppress mismatch warnings')
     .option('-g, --global', 'Add to global config (for CLI tools)')
     .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+    .option('-I, --no-install', 'Skip running pnpm install')
     .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
-    .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
-    .action((localPath, options) => {
-    const absLocalPath = resolve(localPath);
-    const pkgName = getLocalPackageName(absLocalPath);
+    .option('-l, --local <path>', 'Local path (when initializing from URL)')
+    .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
+    .action((pathOrUrl, options) => {
+    const isUrl = isRepoUrl(pathOrUrl);
+    let pkgInfo;
+    let localPath;
+    let activateSource;
+    if (isUrl) {
+        // Fetch package.json from remote repo
+        pkgInfo = getRemotePackageInfo(pathOrUrl);
+        localPath = options.local ? resolve(options.local) : undefined;
+        // Determine which source to activate based on URL type
+        if (localPath) {
+            activateSource = 'local';
+        }
+        else if (pkgInfo.github) {
+            activateSource = 'github';
+        }
+        else if (pkgInfo.gitlab) {
+            activateSource = 'gitlab';
+        }
+    }
+    else {
+        // Read from local path
+        localPath = resolve(pathOrUrl);
+        pkgInfo = getLocalPackageInfo(localPath);
+        activateSource = 'local';
+    }
+    const pkgName = pkgInfo.name;
+    // Warn on mismatches (unless --force)
+    if (!options.force) {
+        if (options.github && pkgInfo.github && options.github !== pkgInfo.github) {
+            console.warn(`Warning: GitHub '${options.github}' differs from package.json '${pkgInfo.github}'`);
+        }
+        if (options.gitlab && pkgInfo.gitlab && options.gitlab !== pkgInfo.gitlab) {
+            console.warn(`Warning: GitLab '${options.gitlab}' differs from package.json '${pkgInfo.gitlab}'`);
+        }
+        if (options.npm && options.npm !== pkgName) {
+            console.warn(`Warning: NPM name '${options.npm}' differs from package.json '${pkgName}'`);
+        }
+    }
     const npmName = options.npm ?? pkgName;
+    const github = options.github ?? pkgInfo.github;
+    const gitlab = options.gitlab ?? pkgInfo.gitlab;
     if (options.global) {
         const config = loadGlobalConfig();
         config.dependencies[pkgName] = {
-            localPath: absLocalPath, // Use absolute path for global config
-            github: options.github,
-            gitlab: options.gitlab,
+            localPath,
+            github,
+            gitlab,
             npm: npmName,
             distBranch: options.distBranch,
         };
         saveGlobalConfig(config);
         console.log(`Initialized ${pkgName} (global):`);
-        console.log(`  Local path: ${absLocalPath}`);
-        if (options.github)
-            console.log(`  GitHub: ${options.github}`);
-        if (options.gitlab)
-            console.log(`  GitLab: ${options.gitlab}`);
+        if (localPath)
+            console.log(`  Local path: ${localPath}`);
+        if (github)
+            console.log(`  GitHub: ${github}`);
+        if (gitlab)
+            console.log(`  GitLab: ${gitlab}`);
         console.log(`  NPM: ${npmName}`);
         console.log(`  Dist branch: ${options.distBranch}`);
+        // Activate for global: install from local path if provided
+        if (localPath) {
+            runGlobalInstall(`file:${localPath}`);
+            console.log(`Installed ${pkgName} globally from local: ${localPath}`);
+        }
         return;
     }
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
-    const relLocalPath = relative(projectRoot, absLocalPath);
-    config.dependencies[pkgName] = {
+    const relLocalPath = localPath ? relative(projectRoot, localPath) : undefined;
+    const depConfig = {
         localPath: relLocalPath,
-        github: options.github,
-        gitlab: options.gitlab,
+        github,
+        gitlab,
         npm: npmName,
         distBranch: options.distBranch,
     };
+    config.dependencies[pkgName] = depConfig;
     saveConfig(projectRoot, config);
     console.log(`Initialized ${pkgName}:`);
-    console.log(`  Local path: ${relLocalPath}`);
-    if (options.github)
-        console.log(`  GitHub: ${options.github}`);
-    if (options.gitlab)
-        console.log(`  GitLab: ${options.gitlab}`);
+    if (relLocalPath)
+        console.log(`  Local path: ${relLocalPath}`);
+    if (github)
+        console.log(`  GitHub: ${github}`);
+    if (gitlab)
+        console.log(`  GitLab: ${gitlab}`);
     console.log(`  NPM: ${npmName}`);
     console.log(`  Dist branch: ${options.distBranch}`);
+    // Activate the dependency based on input type (only if dep exists in package.json)
+    const pkg = loadPackageJson(projectRoot);
+    if (!hasDependency(pkg, pkgName)) {
+        console.log(`(${pkgName} not in package.json, skipping activation)`);
+        return;
+    }
+    if (activateSource === 'local' && relLocalPath) {
+        switchToLocal(projectRoot, pkgName, relLocalPath);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
+    }
+    else if (activateSource === 'github' && github) {
+        switchToGitHub(projectRoot, pkgName, depConfig);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
+    }
+    else if (activateSource === 'gitlab' && gitlab) {
+        switchToGitLab(projectRoot, pkgName, depConfig);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
+    }
+});
+program
+    .command('set [dep]')
+    .description('Update fields for an existing dependency')
+    .option('-b, --dist-branch <branch>', 'Set dist branch')
+    .option('-g, --global', 'Update global config')
+    .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
+    .option('-l, --local <path>', 'Set local path (use "" to remove)')
+    .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
+    .option('-n, --npm <name>', 'Set NPM package name')
+    .action((depQuery, options) => {
+    const isGlobal = options.global;
+    const projectRoot = isGlobal ? '' : findProjectRoot();
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot);
+    const [name, dep] = findMatchingDep(config, depQuery);
+    if (!dep) {
+        console.error(`Dependency not found: ${depQuery}`);
+        process.exit(1);
+    }
+    let changed = false;
+    if (options.local !== undefined) {
+        if (options.local === '') {
+            delete dep.localPath;
+            console.log(`  Removed local path`);
+        }
+        else {
+            const absPath = resolve(options.local);
+            dep.localPath = isGlobal ? absPath : relative(projectRoot, absPath);
+            console.log(`  Local path: ${dep.localPath}`);
+        }
+        changed = true;
+    }
+    if (options.github !== undefined) {
+        if (options.github === '') {
+            delete dep.github;
+            console.log(`  Removed GitHub`);
+        }
+        else {
+            dep.github = options.github;
+            console.log(`  GitHub: ${options.github}`);
+        }
+        changed = true;
+    }
+    if (options.gitlab !== undefined) {
+        if (options.gitlab === '') {
+            delete dep.gitlab;
+            console.log(`  Removed GitLab`);
+        }
+        else {
+            dep.gitlab = options.gitlab;
+            console.log(`  GitLab: ${options.gitlab}`);
+        }
+        changed = true;
+    }
+    if (options.npm !== undefined) {
+        dep.npm = options.npm;
+        console.log(`  NPM: ${options.npm}`);
+        changed = true;
+    }
+    if (options.distBranch !== undefined) {
+        dep.distBranch = options.distBranch;
+        console.log(`  Dist branch: ${options.distBranch}`);
+        changed = true;
+    }
+    if (!changed) {
+        console.log(`No changes specified. Use -l, -H, -L, -n, or -b to update fields.`);
+        return;
+    }
+    if (isGlobal) {
+        saveGlobalConfig(config);
+    }
+    else {
+        saveConfig(projectRoot, config);
+    }
+    console.log(`Updated ${name}`);
+});
+program
+    .command('deinit [dep]')
+    .aliases(['rm', 'remove'])
+    .description('Remove a dependency from config')
+    .option('-g, --global', 'Remove from global config')
+    .action((depQuery, options) => {
+    const isGlobal = options.global;
+    const projectRoot = isGlobal ? '' : findProjectRoot();
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot);
+    const [name, depConfig] = findMatchingDep(config, depQuery);
+    // Remove from config
+    delete config.dependencies[name];
+    if (!isGlobal) {
+        // Clean up pnpm-workspace.yaml if the dep was in it
+        if (depConfig.localPath) {
+            const ws = loadWorkspaceYaml(projectRoot);
+            if (ws?.packages) {
+                ws.packages = ws.packages.filter(p => p !== depConfig.localPath);
+                if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+                    saveWorkspaceYaml(projectRoot, null);
+                }
+                else {
+                    saveWorkspaceYaml(projectRoot, ws);
+                }
+            }
+        }
+        // Clean up vite.config.ts
+        updateViteConfig(projectRoot, name, false);
+    }
+    if (isGlobal) {
+        saveGlobalConfig(config);
+    }
+    else {
+        saveConfig(projectRoot, config);
+    }
+    console.log(`Removed ${name} from ${isGlobal ? 'global ' : ''}config`);
 });
 program
     .command('list')
@@ -389,6 +758,10 @@ program
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
     const [depName, depConfig] = findMatchingDep(config, depQuery);
+    if (!depConfig.localPath) {
+        console.error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`);
+        process.exit(1);
+    }
     const absLocalPath = resolve(projectRoot, depConfig.localPath);
     const pkg = loadPackageJson(projectRoot);
     updatePackageJsonDep(pkg, depName, 'workspace:*');
@@ -411,27 +784,17 @@ program
     }
 });
 program
-    .command('github [dep] [ref]')
+    .command('github [dep]')
     .aliases(['gh', 'g'])
     .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
     .option('-s, --sha', 'Resolve ref to SHA')
     .option('-I, --no-install', 'Skip running pnpm install')
-    .action((arg1, arg2, options) => {
+    .action((depQuery, options) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
-    const deps = Object.entries(config.dependencies);
-    // If only one arg and exactly one dep configured, treat arg as ref
-    let depQuery;
-    let ref;
-    if (arg1 && !arg2 && deps.length === 1) {
-        depQuery = undefined;
-        ref = arg1;
-    }
-    else {
-        depQuery = arg1;
-        ref = arg2;
-    }
     const [depName, depConfig] = findMatchingDep(config, depQuery);
+    const ref = options.ref;
     if (!depConfig.github) {
         throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`);
     }
@@ -479,27 +842,17 @@ program
     }
 });
 program
-    .command('gitlab [dep] [ref]')
+    .command('gitlab [dep]')
     .aliases(['gl'])
     .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-r, --ref <ref>', 'Git ref (branch, tag, or commit)')
     .option('-s, --sha', 'Resolve ref to SHA')
     .option('-I, --no-install', 'Skip running pnpm install')
-    .action((arg1, arg2, options) => {
+    .action((depQuery, options) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
-    const deps = Object.entries(config.dependencies);
-    // If only one arg and exactly one dep configured, treat arg as ref
-    let depQuery;
-    let ref;
-    if (arg1 && !arg2 && deps.length === 1) {
-        depQuery = undefined;
-        ref = arg1;
-    }
-    else {
-        depQuery = arg1;
-        ref = arg2;
-    }
     const [depName, depConfig] = findMatchingDep(config, depQuery);
+    const ref = options.ref;
     if (!depConfig.gitlab) {
         throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`);
     }
@@ -657,7 +1010,7 @@ program
     catch {
         realPath = binPath;
     }
-    console.log(`pnpm-dep-source v0.1.1`);
+    console.log(`pnpm-dep-source v${VERSION}`);
     if (binPath !== realPath) {
         console.log(`  binary: ${binPath} -> ${realPath}`);
     }
