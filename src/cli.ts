@@ -622,6 +622,48 @@ program
   })
 
 program
+  .command('deinit [dep]')
+  .aliases(['rm', 'remove'])
+  .description('Remove a dependency from config')
+  .option('-g, --global', 'Remove from global config')
+  .action((depQuery: string | undefined, options: { global?: boolean }) => {
+    const isGlobal = options.global
+    const projectRoot = isGlobal ? '' : findProjectRoot()
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
+
+    const [name, depConfig] = findMatchingDep(config, depQuery)
+
+    // Remove from config
+    delete config.dependencies[name]
+
+    if (!isGlobal) {
+      // Clean up pnpm-workspace.yaml if the dep was in it
+      if (depConfig.localPath) {
+        const ws = loadWorkspaceYaml(projectRoot)
+        if (ws?.packages) {
+          ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
+          if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+            saveWorkspaceYaml(projectRoot, null)
+          } else {
+            saveWorkspaceYaml(projectRoot, ws)
+          }
+        }
+      }
+
+      // Clean up vite.config.ts
+      updateViteConfig(projectRoot, name, false)
+    }
+
+    if (isGlobal) {
+      saveGlobalConfig(config)
+    } else {
+      saveConfig(projectRoot, config)
+    }
+
+    console.log(`Removed ${name} from ${isGlobal ? 'global ' : ''}config`)
+  })
+
+program
   .command('list')
   .alias('ls')
   .description('List configured dependencies and their current sources')

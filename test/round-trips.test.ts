@@ -378,4 +378,52 @@ describe('pds round-trips', () => {
       expect((config.dependencies as Record<string, { github?: string }>)['@test/override-dep'].github).toBe('explicit/repo')
     })
   })
+
+  describe('deinit command', () => {
+    it('removes dependency from config', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('deinit mock-dep')
+
+      const config = readJson(configPath)
+      expect(config.dependencies).toEqual({})
+    })
+
+    it('cleans up pnpm-workspace.yaml when removing local dep', () => {
+      run('local mock-dep -I')
+      expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(true)
+
+      run('deinit mock-dep')
+
+      expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+    })
+
+    it('cleans up vite.config.ts when removing local dep', () => {
+      const viteOriginal = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
+
+      run('local mock-dep -I')
+      run('deinit mock-dep')
+
+      const viteAfter = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
+      expect(viteAfter).toBe(viteOriginal)
+    })
+
+    it('works with rm alias', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('rm mock-dep')
+
+      const config = readJson(configPath)
+      expect(config.dependencies).toEqual({})
+    })
+
+    it('works with single-dep default', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      run('deinit')
+
+      const config = readJson(configPath)
+      expect(config.dependencies).toEqual({})
+    })
+  })
 })

@@ -456,4 +456,34 @@ describe('e2e: real packages', () => {
       expect((readJson(pkgPath).dependencies as Record<string, string>)['use-kbd']).toBe('workspace:*')
     })
   })
+
+  describe('deinit command', () => {
+    beforeEach(() => {
+      run(`init ${USE_KBD_DIR}`)
+    })
+
+    it('removes dependency from config', () => {
+      run('deinit use-kbd')
+
+      const config = readJson(configPath)
+      expect(config.dependencies).toEqual({})
+    })
+
+    it('cleans up pnpm-workspace.yaml when removing local dep', () => {
+      const wsPath = join(REAL_PROJECT_DIR, 'pnpm-workspace.yaml')
+      run('local -I')
+      expect(existsSync(wsPath)).toBe(true)
+
+      run('deinit use-kbd')
+
+      expect(existsSync(wsPath)).toBe(false)
+    })
+
+    it('works with rm alias', () => {
+      run('rm use-kbd')
+
+      const config = readJson(configPath)
+      expect(config.dependencies).toEqual({})
+    })
+  })
 })
