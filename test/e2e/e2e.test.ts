@@ -184,7 +184,7 @@ describe('e2e: project-level installs', () => {
     })
 
     it('sets dependency to github ref', () => {
-      pds('github main -I')
+      pds('github -R main -I')
 
       const pkg = readJson(pkgPath)
       expect(pkg.dependencies).toEqual({
@@ -196,7 +196,7 @@ describe('e2e: project-level installs', () => {
       pds('local -I')
       expect(existsSync(wsPath)).toBe(true)
 
-      pds('github main -I')
+      pds('github -R main -I')
       expect(existsSync(wsPath)).toBe(false)
     })
   })
@@ -239,7 +239,7 @@ describe('e2e: project-level installs', () => {
     })
 
     it('shows github status after switching to github', () => {
-      pds('github main -I')
+      pds('github -R main -I')
       const output = pds('status')
 
       expect(output).toContain('@test/mock-dep')
@@ -267,7 +267,7 @@ describe('e2e: project-level installs', () => {
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
       expect(existsSync(wsPath)).toBe(true)
 
-      pds('github main -I')
+      pds('github -R main -I')
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
       expect(existsSync(wsPath)).toBe(false)
 
@@ -288,13 +288,13 @@ describe('e2e: project-level installs', () => {
     })
 
     it('github → npm → github preserves state', () => {
-      pds('github main -I')
+      pds('github -R main -I')
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
 
       pds('npm 2.0.0 -I')
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('^2.0.0')
 
-      pds('github develop -I')
+      pds('github -R develop -I')
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#develop')
     })
   })
@@ -459,10 +459,10 @@ describe('e2e: real packages', () => {
     })
 
     it('switches to github mode', () => {
-      run('github dist -I')
+      run('github -R dist -I')
 
       const pkg = readJson(pkgPath)
-      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toMatch(/^github:runsascoded\/use-kbd#/)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('github:runsascoded/use-kbd#dist')
     })
 
     it('round-trips local → npm → local', () => {
