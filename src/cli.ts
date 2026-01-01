@@ -16,9 +16,9 @@ const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source')
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json')
 
 interface DepConfig {
-  localPath: string
+  localPath?: string    // optional when initialized from URL
   github?: string       // e.g. "runsascoded/use-kbd"
-  gitlab?: string       // e.g. "runsascoded/screenshots"
+  gitlab?: string       // e.g. "runsascoded/js/screenshots"
   npm?: string          // e.g. "use-kbd" (defaults to package name from local)
   distBranch?: string   // defaults to "dist"
 }
@@ -263,53 +263,123 @@ function resolveGitLabRef(repo: string, ref: string): string {
   }
 }
 
-interface LocalPackageInfo {
+interface PackageInfo {
   name: string
   github?: string  // "user/repo" format
-  gitlab?: string  // "user/repo" format
+  gitlab?: string  // "group/subgroup/repo" format
 }
 
-function getLocalPackageInfo(localPath: string): LocalPackageInfo {
-  const pkgPath = join(localPath, 'package.json')
-  if (!existsSync(pkgPath)) {
-    throw new Error(`No package.json found at ${localPath}`)
+// Parse GitHub/GitLab repo from a URL string
+function parseRepoUrl(repoUrl: string): { github?: string; gitlab?: string } {
+  const result: { github?: string; gitlab?: string } = {}
+
+  // Handle various URL formats:
+  // - git+https://github.com/user/repo.git
+  // - https://github.com/user/repo
+  // - github:user/repo
+  // - git@github.com:user/repo.git
+  const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)
+    || repoUrl.match(/^github:([\w.-]+\/[\w.-]+)$/)
+  if (githubMatch) {
+    result.github = githubMatch[1]
   }
-  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
 
-  const result: LocalPackageInfo = { name: pkg.name }
+  // GitLab supports nested groups: gitlab.com/group/subgroup/repo
+  const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w./-]+?)(?:\.git)?$/)
+    || repoUrl.match(/^gitlab:([\w./-]+)$/)
+  if (gitlabMatch) {
+    result.gitlab = gitlabMatch[1]
+  }
 
-  // Parse repository field
+  return result
+}
+
+// Parse package.json content into PackageInfo
+function parsePackageJson(pkg: Record<string, unknown>): PackageInfo {
+  const result: PackageInfo = { name: pkg.name as string }
+
   const repo = pkg.repository
   if (repo) {
     let repoUrl: string | undefined
     if (typeof repo === 'string') {
       repoUrl = repo
-    } else if (repo.url) {
-      repoUrl = repo.url
+    } else if (typeof repo === 'object' && repo !== null && 'url' in repo) {
+      repoUrl = (repo as { url: string }).url
     }
 
     if (repoUrl) {
-      // Handle various URL formats:
-      // - git+https://github.com/user/repo.git
-      // - https://github.com/user/repo
-      // - github:user/repo
-      // - git@github.com:user/repo.git
-      const githubMatch = repoUrl.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)
-        || repoUrl.match(/^github:([\w.-]+\/[\w.-]+)$/)
-      if (githubMatch) {
-        result.github = githubMatch[1]
-      }
-
-      // GitLab supports nested groups: gitlab.com/group/subgroup/repo
-      const gitlabMatch = repoUrl.match(/gitlab\.com[/:]([\w./-]+?)(?:\.git)?$/)
-        || repoUrl.match(/^gitlab:([\w./-]+)$/)
-      if (gitlabMatch) {
-        result.gitlab = gitlabMatch[1]
-      }
+      const parsed = parseRepoUrl(repoUrl)
+      result.github = parsed.github
+      result.gitlab = parsed.gitlab
     }
   }
 
   return result
+}
+
+// Fetch package.json from GitHub repo
+function fetchGitHubPackageJson(repo: string, ref = 'HEAD'): Record<string, unknown> {
+  const result = spawnSync('gh', ['api', `repos/${repo}/contents/package.json`, '--jq', '.content'], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`)
+  }
+  const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
+  return JSON.parse(content)
+}
+
+// Fetch package.json from GitLab repo
+function fetchGitLabPackageJson(repo: string, ref = 'HEAD'): Record<string, unknown> {
+  const encodedPath = encodeURIComponent(repo)
+  const result = spawnSync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], {
+    encoding: 'utf-8',
+  })
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
+  }
+  return JSON.parse(result.stdout)
+}
+
+// Get package info from local path
+function getLocalPackageInfo(localPath: string): PackageInfo {
+  const pkgPath = join(localPath, 'package.json')
+  if (!existsSync(pkgPath)) {
+    throw new Error(`No package.json found at ${localPath}`)
+  }
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+  return parsePackageJson(pkg)
+}
+
+// Get package info from URL (GitHub or GitLab)
+function getRemotePackageInfo(url: string): PackageInfo & { github?: string; gitlab?: string } {
+  const parsed = parseRepoUrl(url)
+
+  let pkg: Record<string, unknown>
+  if (parsed.github) {
+    pkg = fetchGitHubPackageJson(parsed.github)
+  } else if (parsed.gitlab) {
+    pkg = fetchGitLabPackageJson(parsed.gitlab)
+  } else {
+    throw new Error(`Cannot parse repository from URL: ${url}`)
+  }
+
+  const info = parsePackageJson(pkg)
+  // Override with the URL we were given (it's authoritative)
+  return {
+    ...info,
+    github: parsed.github ?? info.github,
+    gitlab: parsed.gitlab ?? info.gitlab,
+  }
+}
+
+// Check if argument looks like a URL rather than a local path
+function isRepoUrl(arg: string): boolean {
+  return arg.startsWith('http://') ||
+    arg.startsWith('https://') ||
+    arg.startsWith('github:') ||
+    arg.startsWith('gitlab:') ||
+    arg.startsWith('git@')
 }
 
 function getLocalPackageName(localPath: string): string {
@@ -387,17 +457,30 @@ program
   .version(VERSION)
 
 program
-  .command('init <local-path>')
-  .description('Initialize a dependency in the config')
+  .command('init <path-or-url>')
+  .description('Initialize a dependency from local path or repo URL')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
   .option('-f, --force', 'Suppress mismatch warnings')
   .option('-g, --global', 'Add to global config (for CLI tools)')
   .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
-  .option('-n, --npm <name>', 'NPM package name (defaults to name from local package.json)')
-  .action((localPath: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; npm?: string }) => {
-    const absLocalPath = resolve(localPath)
-    const pkgInfo = getLocalPackageInfo(absLocalPath)
+  .option('-l, --local <path>', 'Local path (when initializing from URL)')
+  .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
+  .action((pathOrUrl: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; local?: string; npm?: string }) => {
+    const isUrl = isRepoUrl(pathOrUrl)
+    let pkgInfo: PackageInfo
+    let localPath: string | undefined
+
+    if (isUrl) {
+      // Fetch package.json from remote repo
+      pkgInfo = getRemotePackageInfo(pathOrUrl)
+      localPath = options.local ? resolve(options.local) : undefined
+    } else {
+      // Read from local path
+      localPath = resolve(pathOrUrl)
+      pkgInfo = getLocalPackageInfo(localPath)
+    }
+
     const pkgName = pkgInfo.name
 
     // Warn on mismatches (unless --force)
@@ -420,7 +503,7 @@ program
     if (options.global) {
       const config = loadGlobalConfig()
       config.dependencies[pkgName] = {
-        localPath: absLocalPath,  // Use absolute path for global config
+        localPath,
         github,
         gitlab,
         npm: npmName,
@@ -428,7 +511,7 @@ program
       }
       saveGlobalConfig(config)
       console.log(`Initialized ${pkgName} (global):`)
-      console.log(`  Local path: ${absLocalPath}`)
+      if (localPath) console.log(`  Local path: ${localPath}`)
       if (github) console.log(`  GitHub: ${github}`)
       if (gitlab) console.log(`  GitLab: ${gitlab}`)
       console.log(`  NPM: ${npmName}`)
@@ -438,7 +521,7 @@ program
 
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
-    const relLocalPath = relative(projectRoot, absLocalPath)
+    const relLocalPath = localPath ? relative(projectRoot, localPath) : undefined
 
     config.dependencies[pkgName] = {
       localPath: relLocalPath,
@@ -450,7 +533,7 @@ program
 
     saveConfig(projectRoot, config)
     console.log(`Initialized ${pkgName}:`)
-    console.log(`  Local path: ${relLocalPath}`)
+    if (relLocalPath) console.log(`  Local path: ${relLocalPath}`)
     if (github) console.log(`  GitHub: ${github}`)
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
     console.log(`  NPM: ${npmName}`)
@@ -602,6 +685,11 @@ program
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
+
+    if (!depConfig.localPath) {
+      console.error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
+      process.exit(1)
+    }
 
     const absLocalPath = resolve(projectRoot, depConfig.localPath)
 
