@@ -15,8 +15,12 @@ pnpm add -g pnpm-dep-source
 ### Initialize a dependency
 
 ```bash
-# Auto-detects GitHub/GitLab from local package.json repository field
+# From local path - auto-detects GitHub/GitLab from package.json repository field
 pds init ../../path/to/local/pkg
+
+# From GitHub/GitLab URL
+pds init https://github.com/user/repo
+pds init https://gitlab.com/user/repo
 
 # Override or specify repo explicitly
 pds init ../../path/to/local/pkg -H github-user/repo
@@ -25,6 +29,13 @@ pds init ../../path/to/local/pkg -L gitlab-user/repo
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
 pds init /path/to/local/cli -g
 ```
+
+`init` also **auto-activates** the dependency if it exists in `package.json`:
+- Local path → switches to `workspace:*` mode
+- GitHub URL → switches to `github:user/repo#sha`
+- GitLab URL → switches to GitLab tarball URL
+
+Use `-I` to skip activation and just save config.
 
 ### Switch to local development
 
@@ -43,10 +54,9 @@ This will:
 ### Switch to GitHub
 
 ```bash
-pds github [dep]           # Uses dist branch HEAD (resolved to SHA)
-pds github [dep] [ref]     # Uses specific ref
-pds gh [dep] -s v1.0.0     # Resolves tag to SHA
-pds gh main                # With one dep configured, arg is treated as ref
+pds github [dep]              # Uses dist branch HEAD (resolved to SHA)
+pds github [dep] -r <ref>     # Uses specific ref
+pds gh [dep] -r v1.0.0 -s     # Resolves tag to SHA
 ```
 
 This will:
@@ -58,9 +68,9 @@ This will:
 ### Switch to GitLab
 
 ```bash
-pds gitlab [dep]           # Uses dist branch HEAD (resolved to SHA)
-pds gitlab [dep] [ref]     # Uses specific ref
-pds gl [dep] -s v1.0.0     # Resolves tag to SHA
+pds gitlab [dep]              # Uses dist branch HEAD (resolved to SHA)
+pds gitlab [dep] -r <ref>     # Uses specific ref
+pds gl [dep] -r v1.0.0 -s     # Resolves tag to SHA
 ```
 
 This will:
