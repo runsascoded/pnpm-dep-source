@@ -930,7 +930,7 @@ program
 
 program
   .command('github [dep]')
-  .aliases(['gh', 'g'])
+  .aliases(['gh'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
   .option('-g, --global', 'Install globally (uses global config)')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
@@ -1065,6 +1065,75 @@ program
     updateViteConfig(projectRoot, depName, false)
 
     console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+
+    if (options.install) {
+      runPnpmInstall(projectRoot)
+    }
+  })
+
+program
+  .command('git [dep]')
+  .alias('g')
+  .description('Switch dependency to GitHub or GitLab (auto-detects which is configured)')
+  .option('-g, --global', 'Install globally (uses global config)')
+  .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
+  .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .action((depQuery: string | undefined, options: { global: boolean; ref?: string; rawRef?: string; install: boolean }) => {
+    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    const [depName, depConfig] = findMatchingDep(config, depQuery)
+
+    if (options.ref && options.rawRef) {
+      throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
+    }
+
+    const hasGitHub = !!depConfig.github
+    const hasGitLab = !!depConfig.gitlab
+
+    if (!hasGitHub && !hasGitLab) {
+      throw new Error(`No GitHub or GitLab repo configured for ${depName}. Use "pds init" with -H or -L`)
+    }
+    if (hasGitHub && hasGitLab) {
+      throw new Error(`Both GitHub and GitLab configured for ${depName}. Use "pds gh" or "pds gl" explicitly`)
+    }
+
+    const distBranch = depConfig.distBranch ?? 'dist'
+
+    // Determine the ref to use
+    let resolvedRef: string | undefined
+    if (options.rawRef) {
+      resolvedRef = options.rawRef
+    } else if (options.ref) {
+      // Resolve via the appropriate API
+      resolvedRef = hasGitHub
+        ? resolveGitHubRef(depConfig.github!, options.ref)
+        : resolveGitLabRef(depConfig.gitlab!, options.ref)
+    }
+    // If no ref specified, let the helper resolve the dist branch
+
+    if (options.global) {
+      if (hasGitHub) {
+        const ref = resolvedRef ?? resolveGitHubRef(depConfig.github!, distBranch)
+        const specifier = `github:${depConfig.github}#${ref}`
+        runGlobalInstall(specifier)
+        console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`)
+      } else {
+        const ref = resolvedRef ?? resolveGitLabRef(depConfig.gitlab!, distBranch)
+        const repoBasename = depConfig.gitlab!.split('/').pop()
+        const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`
+        runGlobalInstall(tarballUrl)
+        console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`)
+      }
+      return
+    }
+
+    const projectRoot = findProjectRoot()
+
+    if (hasGitHub) {
+      switchToGitHub(projectRoot, depName, depConfig, resolvedRef)
+    } else {
+      switchToGitLab(projectRoot, depName, depConfig, resolvedRef)
+    }
 
     if (options.install) {
       runPnpmInstall(projectRoot)
