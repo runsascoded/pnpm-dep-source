@@ -407,7 +407,7 @@ describe('e2e: real packages', () => {
       const config = readJson(configPath)
       const dep = (config.dependencies as Record<string, { github?: string; localPath?: string }>)['use-kbd']
       expect(dep.github).toBe('runsascoded/use-kbd')
-      expect(dep.localPath).toBe(USE_KBD_DIR)
+      expect(dep.localPath).toBe('../use-kbd')
 
       // Should have auto-activated to local mode
       const pkg = readJson(pkgPath)
