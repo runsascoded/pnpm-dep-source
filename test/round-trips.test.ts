@@ -353,7 +353,7 @@ describe('pds round-trips', () => {
         },
       })
 
-      run(`init ${mockDepWithRepo}`)
+      run(`init ${mockDepWithRepo} -I`)
 
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
       const config = readJson(configPath)
@@ -371,7 +371,7 @@ describe('pds round-trips', () => {
         repository: 'github:original/repo',
       })
 
-      run(`init ${mockDepWithRepo} -H explicit/repo -f`)
+      run(`init ${mockDepWithRepo} -H explicit/repo -f -I`)
 
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
       const config = readJson(configPath)
@@ -398,7 +398,7 @@ describe('pds round-trips', () => {
       expect(wsContent).toContain('../mock-dep')
     })
 
-    it('skips activation when dep not in package.json', () => {
+    it('adds dep to package.json if not present', () => {
       const newDepDir = join(TEST_DIR, 'new-dep')
       mkdirSync(newDepDir, { recursive: true })
       writeJson(join(newDepDir, 'package.json'), {
@@ -412,16 +412,30 @@ describe('pds round-trips', () => {
 
       const output = run(`init ${newDepDir} -I`)
 
-      // Should log that activation was skipped
-      expect(output).toContain('not in package.json')
+      // Should log that dep was added
+      expect(output).toContain('Added @test/new-dep to dependencies')
 
-      // Config should still be created
+      // Config should be created
       const config = readJson(configPath)
       expect(config.dependencies).toHaveProperty('@test/new-dep')
 
-      // But package.json should not be modified (no @test/new-dep entry)
+      // And package.json should have the dep added (activated to local via workspace:*)
       const pkg = readJson(join(TEST_DIR, 'package.json'))
-      expect((pkg.dependencies as Record<string, string>)['@test/new-dep']).toBeUndefined()
+      expect((pkg.dependencies as Record<string, string>)['@test/new-dep']).toBe('workspace:*')
+    })
+
+    it('adds dep to devDependencies with -D flag', () => {
+      const newDevDepDir = join(TEST_DIR, 'new-dev-dep')
+      mkdirSync(newDevDepDir, { recursive: true })
+      writeJson(join(newDevDepDir, 'package.json'), {
+        name: '@test/new-dev-dep',
+        version: '1.0.0',
+      })
+
+      run(`init ${newDevDepDir} -D -I`)
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.devDependencies as Record<string, string>)['@test/new-dev-dep']).toBe('workspace:*')
     })
 
     it('activates after deinit + init cycle', () => {

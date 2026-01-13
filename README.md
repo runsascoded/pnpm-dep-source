@@ -30,12 +30,12 @@ pds init ../../path/to/local/pkg -L gitlab-user/repo
 pds init /path/to/local/cli -g
 ```
 
-`init` also **auto-activates** the dependency if it exists in `package.json`:
+`init` **adds the dependency to `package.json`** if not present, then **auto-activates**:
 - Local path → switches to `workspace:*` mode
 - GitHub URL → switches to `github:user/repo#sha`
 - GitLab URL → switches to GitLab tarball URL
 
-Use `-I` to skip activation and just save config.
+Use `-D` to add as a devDependency, or `-I` to skip adding/activation entirely.
 
 ### Switch to local development
 
@@ -154,6 +154,7 @@ The tool stores configuration in `.pnpm-dep-source.json`:
 ## Options
 
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
+- `-D, --dev`: Add as devDependency (for `init` when adding to package.json)
 - `-f, --force`: Suppress mismatch warnings in `init`
 - `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools
 - `-H, --github <repo>`: GitHub repo (auto-detected from package.json if not specified)

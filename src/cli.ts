@@ -200,6 +200,20 @@ function hasDependency(pkg: Record<string, unknown>, depName: string): boolean {
   return (deps && depName in deps) || (devDeps && depName in devDeps) || false
 }
 
+function addDependency(
+  pkg: Record<string, unknown>,
+  depName: string,
+  specifier: string,
+  isDev: boolean,
+): void {
+  const key = isDev ? 'devDependencies' : 'dependencies'
+  if (!pkg[key]) {
+    pkg[key] = {}
+  }
+  const deps = pkg[key] as Record<string, string>
+  deps[depName] = specifier
+}
+
 function getCurrentSource(pkg: Record<string, unknown>, depName: string): string {
   const deps = pkg.dependencies as Record<string, string> | undefined
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
@@ -588,6 +602,7 @@ program
   .command('init <path-or-url>')
   .description('Initialize a dependency from local path or repo URL and activate it')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
+  .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
   .option('-f, --force', 'Suppress mismatch warnings')
   .option('-g, --global', 'Add to global config (for CLI tools)')
   .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
@@ -595,7 +610,7 @@ program
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .action((pathOrUrl: string, options: { distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
+  .action((pathOrUrl: string, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
     const isUrl = isRepoUrl(pathOrUrl)
     let pkgInfo: PackageInfo
     let localPath: string | undefined
@@ -685,11 +700,16 @@ program
     console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
 
-    // Activate the dependency based on input type (only if dep exists in package.json)
+    // Activate the dependency based on input type
+    // If dep not in package.json, add it first
     const pkg = loadPackageJson(projectRoot)
-    if (!hasDependency(pkg, pkgName)) {
-      console.log(`(${pkgName} not in package.json, skipping activation)`)
-      return
+    const needsAdd = !hasDependency(pkg, pkgName)
+
+    if (needsAdd) {
+      // Add a placeholder that will be replaced by the switch function
+      addDependency(pkg, pkgName, '*', !!options.dev)
+      savePackageJson(projectRoot, pkg)
+      console.log(`Added ${pkgName} to ${options.dev ? 'devDependencies' : 'dependencies'}`)
     }
 
     if (activateSource === 'local' && relLocalPath) {
@@ -704,6 +724,17 @@ program
       }
     } else if (activateSource === 'gitlab' && gitlab) {
       switchToGitLab(projectRoot, pkgName, depConfig)
+      if (options.install) {
+        runPnpmInstall(projectRoot)
+      }
+    } else if (needsAdd) {
+      // No activation source but we added the dep - use npm latest
+      const npmPkgName = depConfig.npm ?? pkgName
+      const latestVersion = getLatestNpmVersion(npmPkgName)
+      const pkgUpdated = loadPackageJson(projectRoot)
+      updatePackageJsonDep(pkgUpdated, pkgName, `^${latestVersion}`)
+      savePackageJson(projectRoot, pkgUpdated)
+      console.log(`Set ${pkgName} to npm: ^${latestVersion}`)
       if (options.install) {
         runPnpmInstall(projectRoot)
       }
