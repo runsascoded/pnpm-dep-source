@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { program } from 'commander';
 import { execSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -26,16 +26,45 @@ const VERSION = pkgJson.version;
 const CONFIG_FILE = '.pnpm-dep-source.json';
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source');
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json');
+// Common subdirectories where JS projects might live
+const JS_PROJECT_SUBDIRS = ['www', 'web', 'app', 'frontend', 'client', 'packages', 'src'];
 // Find project root (directory containing package.json)
 function findProjectRoot(startDir = process.cwd()) {
     let dir = startDir;
-    while (dir !== '/') {
+    while (dir !== dirname(dir)) {
         if (existsSync(join(dir, 'package.json'))) {
             return dir;
         }
         dir = dirname(dir);
     }
-    throw new Error('Could not find project root (no package.json found)');
+    // No package.json found - look for JS projects in subdirectories and provide helpful error
+    const cwd = process.cwd();
+    const suggestions = [];
+    for (const subdir of JS_PROJECT_SUBDIRS) {
+        const subdirPath = join(cwd, subdir);
+        if (existsSync(join(subdirPath, 'package.json'))) {
+            suggestions.push(subdir);
+        }
+    }
+    // Also check for any immediate subdirectory with package.json
+    try {
+        const entries = readdirSync(cwd, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.isDirectory() && !entry.name.startsWith('.') && !suggestions.includes(entry.name)) {
+                if (existsSync(join(cwd, entry.name, 'package.json'))) {
+                    suggestions.push(entry.name);
+                }
+            }
+        }
+    }
+    catch {
+        // Ignore errors reading directory
+    }
+    let message = 'No package.json found in current directory or any parent.';
+    if (suggestions.length > 0) {
+        message += `\n\nFound JS projects in subdirectories:\n${suggestions.map(s => `  cd ${s}`).join('\n')}`;
+    }
+    throw new Error(message);
 }
 function loadConfig(projectRoot) {
     const configPath = join(projectRoot, CONFIG_FILE);
@@ -154,6 +183,14 @@ function hasDependency(pkg, depName) {
     const deps = pkg.dependencies;
     const devDeps = pkg.devDependencies;
     return (deps && depName in deps) || (devDeps && depName in devDeps) || false;
+}
+function addDependency(pkg, depName, specifier, isDev) {
+    const key = isDev ? 'devDependencies' : 'dependencies';
+    if (!pkg[key]) {
+        pkg[key] = {};
+    }
+    const deps = pkg[key];
+    deps[depName] = specifier;
 }
 function getCurrentSource(pkg, depName) {
     const deps = pkg.dependencies;
@@ -477,6 +514,7 @@ program
     .command('init <path-or-url>')
     .description('Initialize a dependency from local path or repo URL and activate it')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
+    .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
     .option('-f, --force', 'Suppress mismatch warnings')
     .option('-g, --global', 'Add to global config (for CLI tools)')
     .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
@@ -573,11 +611,15 @@ program
         console.log(`  GitLab: ${gitlab}`);
     console.log(`  NPM: ${npmName}`);
     console.log(`  Dist branch: ${options.distBranch}`);
-    // Activate the dependency based on input type (only if dep exists in package.json)
+    // Activate the dependency based on input type
+    // If dep not in package.json, add it first
     const pkg = loadPackageJson(projectRoot);
-    if (!hasDependency(pkg, pkgName)) {
-        console.log(`(${pkgName} not in package.json, skipping activation)`);
-        return;
+    const needsAdd = !hasDependency(pkg, pkgName);
+    if (needsAdd) {
+        // Add a placeholder that will be replaced by the switch function
+        addDependency(pkg, pkgName, '*', !!options.dev);
+        savePackageJson(projectRoot, pkg);
+        console.log(`Added ${pkgName} to ${options.dev ? 'devDependencies' : 'dependencies'}`);
     }
     if (activateSource === 'local' && relLocalPath) {
         switchToLocal(projectRoot, pkgName, relLocalPath);
@@ -593,6 +635,18 @@ program
     }
     else if (activateSource === 'gitlab' && gitlab) {
         switchToGitLab(projectRoot, pkgName, depConfig);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
+    }
+    else if (needsAdd) {
+        // No activation source but we added the dep - use npm latest
+        const npmPkgName = depConfig.npm ?? pkgName;
+        const latestVersion = getLatestNpmVersion(npmPkgName);
+        const pkgUpdated = loadPackageJson(projectRoot);
+        updatePackageJsonDep(pkgUpdated, pkgName, `^${latestVersion}`);
+        savePackageJson(projectRoot, pkgUpdated);
+        console.log(`Set ${pkgName} to npm: ^${latestVersion}`);
         if (options.install) {
             runPnpmInstall(projectRoot);
         }
@@ -1142,5 +1196,16 @@ program
     }
     console.log(`  source: unknown`);
 });
-program.parse();
+try {
+    program.parse();
+}
+catch (err) {
+    if (err instanceof Error) {
+        console.error(`Error: ${err.message}`);
+    }
+    else {
+        console.error('An unknown error occurred');
+    }
+    process.exit(1);
+}
 //# sourceMappingURL=cli.js.map

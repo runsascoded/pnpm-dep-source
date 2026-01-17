@@ -1,6 +1,6 @@
 {
   "name": "pnpm-dep-source",
-  "version": "0.3.1-dist.c60dc81",
+  "version": "0.3.3-dist.e2fac0b",
   "description": "CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources",
   "type": "module",
   "bin": {
