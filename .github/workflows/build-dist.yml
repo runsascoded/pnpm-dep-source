@@ -1,5 +1,7 @@
 name: Build dist branch
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       src:
@@ -10,7 +12,7 @@ on:
         required: false
 jobs:
   build-dist:
-    uses: runsascoded/gh-pnpm-dist/.github/workflows/build-dist.yml@v1
+    uses: runsascoded/npm-dist/.github/workflows/build-dist.yml@v1
     with:
-      source_ref: ${{ inputs.src }}
-      dist_branch: ${{ inputs.dst }}
+      source_ref: ${{ inputs.src || '' }}
+      dist_branch: ${{ inputs.dst || 'dist' }}
