@@ -2,7 +2,7 @@
 
 import { program } from 'commander'
 import { execSync, spawnSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { basename, dirname, join, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -43,16 +43,50 @@ interface Config {
   dependencies: Record<string, DepConfig>
 }
 
+// Common subdirectories where JS projects might live
+const JS_PROJECT_SUBDIRS = ['www', 'web', 'app', 'frontend', 'client', 'packages', 'src']
+
 // Find project root (directory containing package.json)
 function findProjectRoot(startDir: string = process.cwd()): string {
   let dir = startDir
-  while (dir !== '/') {
+  while (dir !== dirname(dir)) {
     if (existsSync(join(dir, 'package.json'))) {
       return dir
     }
     dir = dirname(dir)
   }
-  throw new Error('Could not find project root (no package.json found)')
+
+  // No package.json found - look for JS projects in subdirectories and provide helpful error
+  const cwd = process.cwd()
+  const suggestions: string[] = []
+
+  for (const subdir of JS_PROJECT_SUBDIRS) {
+    const subdirPath = join(cwd, subdir)
+    if (existsSync(join(subdirPath, 'package.json'))) {
+      suggestions.push(subdir)
+    }
+  }
+
+  // Also check for any immediate subdirectory with package.json
+  try {
+    const entries = readdirSync(cwd, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.') && !suggestions.includes(entry.name)) {
+        if (existsSync(join(cwd, entry.name, 'package.json'))) {
+          suggestions.push(entry.name)
+        }
+      }
+    }
+  } catch {
+    // Ignore errors reading directory
+  }
+
+  let message = 'No package.json found in current directory or any parent.'
+  if (suggestions.length > 0) {
+    message += `\n\nFound JS projects in subdirectories:\n${suggestions.map(s => `  cd ${s}`).join('\n')}`
+  }
+
+  throw new Error(message)
 }
 
 function loadConfig(projectRoot: string): Config {
@@ -1348,4 +1382,13 @@ program
     console.log(`  source: unknown`)
   })
 
-program.parse()
+try {
+  program.parse()
+} catch (err) {
+  if (err instanceof Error) {
+    console.error(`Error: ${err.message}`)
+  } else {
+    console.error('An unknown error occurred')
+  }
+  process.exit(1)
+}
