@@ -1,5 +1,7 @@
 # pnpm-dep-source
 
+[![npm version](https://img.shields.io/npm/v/pnpm-dep-source)](https://www.npmjs.com/package/pnpm-dep-source)
+
 CLI to switch pnpm dependencies between local, GitHub / GitLab, and NPM sources.
 
 ## Installation
