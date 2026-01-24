@@ -157,7 +157,14 @@ function findMatchingDep(config, query) {
         }
         throw new Error(`Multiple dependencies configured. Specify one: ${deps.map(([n]) => n).join(', ')}`);
     }
-    const matches = deps.filter(([name]) => name.toLowerCase().includes(query.toLowerCase()));
+    const queryLower = query.toLowerCase();
+    // First, check for exact match (case-insensitive)
+    const exactMatch = deps.find(([name]) => name.toLowerCase() === queryLower);
+    if (exactMatch) {
+        return exactMatch;
+    }
+    // Fall back to substring matching
+    const matches = deps.filter(([name]) => name.toLowerCase().includes(queryLower));
     if (matches.length === 0) {
         throw new Error(`No dependency matching "${query}" found in config`);
     }
@@ -1196,6 +1203,10 @@ program
     }
     console.log(`  source: unknown`);
 });
+// Default to 'list' command when no arguments provided
+if (process.argv.length <= 2) {
+    process.argv.push('list');
+}
 try {
     program.parse();
 }
