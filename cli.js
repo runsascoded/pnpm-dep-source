@@ -331,6 +331,34 @@ function fetchGitLabPackageJson(repo, ref = 'HEAD') {
     }
     return JSON.parse(result.stdout);
 }
+// Detect GitHub/GitLab repo from git remote in or above the given path
+function detectGitRepo(startPath) {
+    let dir = startPath;
+    while (dir !== dirname(dir)) {
+        if (existsSync(join(dir, '.git'))) {
+            // Found git repo, get remote URLs
+            const result = spawnSync('git', ['-C', dir, 'remote', '-v'], {
+                encoding: 'utf-8',
+            });
+            if (result.status !== 0) {
+                return null;
+            }
+            // Parse remote URLs - take the first fetch URL that matches GitHub/GitLab
+            for (const line of result.stdout.split('\n')) {
+                const match = line.match(/^\S+\s+(\S+)\s+\(fetch\)$/);
+                if (match) {
+                    const parsed = parseRepoUrl(match[1]);
+                    if (parsed.github || parsed.gitlab) {
+                        return parsed;
+                    }
+                }
+            }
+            return null;
+        }
+        dir = dirname(dir);
+    }
+    return null;
+}
 // Get package info from local path
 function getLocalPackageInfo(localPath) {
     const pkgPath = join(localPath, 'package.json');
@@ -338,7 +366,16 @@ function getLocalPackageInfo(localPath) {
         throw new Error(`No package.json found at ${localPath}`);
     }
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return parsePackageJson(pkg);
+    const info = parsePackageJson(pkg);
+    // Fallback to git remote detection if no repo found in package.json
+    if (!info.github && !info.gitlab) {
+        const gitRepo = detectGitRepo(localPath);
+        if (gitRepo) {
+            info.github = gitRepo.github;
+            info.gitlab = gitRepo.gitlab;
+        }
+    }
+    return info;
 }
 // Get package info from URL (GitHub or GitLab)
 function getRemotePackageInfo(url) {
