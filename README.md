@@ -17,7 +17,7 @@ pnpm add -g pnpm-dep-source
 ### Initialize a dependency
 
 ```bash
-# From local path - auto-detects GitHub/GitLab from package.json repository field
+# From local path - auto-detects GitHub/GitLab from package.json or git remote
 pds init ../../path/to/local/pkg
 
 # From GitHub/GitLab URL
@@ -112,6 +112,7 @@ pds s                # Alias
 ### List configured dependencies
 
 ```bash
+pds         # defaults to list
 pds list    # or pds ls
 ```
 
@@ -135,6 +136,37 @@ pds rm -g           # Remove from global config
 
 This removes the dependency from `.pnpm-dep-source.json` but does not modify `package.json`.
 
+### Pre-commit hooks
+
+Prevent accidentally committing with local dependencies:
+
+```bash
+pds hooks install    # Install global pre-commit hook
+pds hooks uninstall  # Remove it
+pds hooks status     # Check installation status
+```
+
+The hook runs `pds check` before each commit, blocking if any pds-managed dependencies are set to `workspace:*`. Bypass with `git commit --no-verify` when needed.
+
+Uses `git config --global core.hooksPath` to apply to all repositories. The hook chains to:
+- Any previously configured `core.hooksPath` (saved and restored on uninstall)
+- Local `.git/hooks/pre-commit` if present (normally ignored when `core.hooksPath` is set)
+
+To disable the check for a specific project, add `"skipCheck": true` to `.pnpm-dep-source.json`.
+
+### Check for local dependencies
+
+```bash
+pds check            # Exits non-zero if any deps are local
+pds check -q         # Quiet mode (exit code only)
+```
+
+### Show pds info
+
+```bash
+pds info             # Show version and install source
+```
+
 ## Config file
 
 The tool stores configuration in `.pnpm-dep-source.json`:
@@ -149,9 +181,12 @@ The tool stores configuration in `.pnpm-dep-source.json`:
       "npm": "@scope/package-name",
       "distBranch": "dist"
     }
-  }
+  },
+  "skipCheck": false
 }
 ```
+
+Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 
 ## Options
 
@@ -210,15 +245,15 @@ on:
         required: false
 jobs:
   build-dist:
-    uses: runsascoded/gh-pnpm-dist/.github/workflows/build-dist.yml@v1
+    uses: runsascoded/npm-dist/.github/workflows/build-dist.yml@v1
     with:
       source_ref: ${{ inputs.src }}
       dist_branch: ${{ inputs.dst }}
 ```
 
-See [gh-pnpm-dist] for more options.
+See [npm-dist] for more options.
 
-[gh-pnpm-dist]: https://github.com/runsascoded/gh-pnpm-dist
+[npm-dist]: https://github.com/runsascoded/npm-dist
 
 ## Requirements
 

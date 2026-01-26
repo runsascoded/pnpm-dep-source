@@ -41,6 +41,7 @@ interface DepConfig {
 
 interface Config {
   dependencies: Record<string, DepConfig>
+  skipCheck?: boolean  // Disable pre-commit check for this project
 }
 
 // Common subdirectories where JS projects might live
@@ -1430,6 +1431,259 @@ program
     }
 
     console.log(`  source: unknown`)
+  })
+
+const GLOBAL_HOOKS_DIR = join(GLOBAL_CONFIG_DIR, 'hooks')
+
+// Check if any pds-managed deps are set to local (workspace:*)
+function checkLocalDeps(projectRoot: string): { name: string; source: string }[] {
+  const configPath = join(projectRoot, CONFIG_FILE)
+  if (!existsSync(configPath)) {
+    return [] // No pds config, nothing to check
+  }
+
+  const config = loadConfig(projectRoot)
+  const pkg = loadPackageJson(projectRoot)
+  const localDeps: { name: string; source: string }[] = []
+
+  for (const name of Object.keys(config.dependencies)) {
+    const source = getCurrentSource(pkg, name)
+    if (source === 'workspace:*') {
+      localDeps.push({ name, source })
+    }
+  }
+
+  return localDeps
+}
+
+program
+  .command('check')
+  .description('Check if any pds-managed deps are set to local (for git hooks)')
+  .option('-q, --quiet', 'Exit with code only, no output')
+  .action((options: { quiet?: boolean }) => {
+    let projectRoot: string
+    try {
+      projectRoot = findProjectRoot()
+    } catch {
+      // Not in a JS project, nothing to check
+      if (!options.quiet) {
+        console.log('Not in a JS project, skipping check.')
+      }
+      return
+    }
+
+    // Check if skipCheck is enabled for this project
+    const config = loadConfig(projectRoot)
+    if (config.skipCheck) {
+      if (!options.quiet) {
+        console.log('Check disabled for this project (skipCheck: true).')
+      }
+      return
+    }
+
+    const localDeps = checkLocalDeps(projectRoot)
+
+    if (localDeps.length === 0) {
+      if (!options.quiet) {
+        console.log('No local dependencies found.')
+      }
+      return
+    }
+
+    if (!options.quiet) {
+      console.error('Error: The following dependencies are set to local:')
+      for (const { name } of localDeps) {
+        console.error(`  - ${name}`)
+      }
+      console.error('\nSwitch them before committing:')
+      console.error('  pds gh <dep>   # Switch to GitHub')
+      console.error('  pds gl <dep>   # Switch to GitLab')
+      console.error('  pds npm <dep>  # Switch to NPM')
+      console.error('\nOr bypass with: git commit --no-verify')
+    }
+    process.exit(1)
+  })
+
+const HOOKS_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'hooks.json')
+
+interface HooksConfig {
+  previousHooksPath?: string  // Saved core.hooksPath before pds install
+}
+
+function loadHooksConfig(): HooksConfig {
+  if (!existsSync(HOOKS_CONFIG_FILE)) {
+    return {}
+  }
+  return JSON.parse(readFileSync(HOOKS_CONFIG_FILE, 'utf-8'))
+}
+
+function saveHooksConfig(config: HooksConfig): void {
+  if (!existsSync(GLOBAL_CONFIG_DIR)) {
+    mkdirSync(GLOBAL_CONFIG_DIR, { recursive: true })
+  }
+  writeFileSync(HOOKS_CONFIG_FILE, JSON.stringify(config, null, 2) + '\n')
+}
+
+function generatePreCommitHook(previousHooksPath?: string): string {
+  const previousHooksSection = previousHooksPath
+    ? `if [ -x "${previousHooksPath}/pre-commit" ]; then
+  "${previousHooksPath}/pre-commit" || exit 1
+fi`
+    : '# (no previous core.hooksPath)'
+
+  return `#!/bin/sh
+# pds pre-commit hook - checks for local dependencies
+# Installed by: pds hooks install
+
+# 1. Run pds check
+if command -v pds >/dev/null 2>&1; then
+  pds check || exit 1
+else
+  echo "Warning: pds not found in PATH, skipping local dependency check"
+fi
+
+# 2. Chain to previous global hooks (if any were configured before pds)
+${previousHooksSection}
+
+# 3. Chain to local .git/hooks (which Git ignores when core.hooksPath is set)
+if [ -x .git/hooks/pre-commit ]; then
+  .git/hooks/pre-commit || exit 1
+fi
+`
+}
+
+const hooks = program
+  .command('hooks')
+  .description('Manage git hooks for pds')
+
+hooks
+  .command('install')
+  .description('Install global git pre-commit hook')
+  .option('-f, --force', 'Overwrite existing core.hooksPath')
+  .action((options: { force?: boolean }) => {
+    // Check if core.hooksPath is already set
+    const existingPath = spawnSync('git', ['config', '--global', 'core.hooksPath'], {
+      encoding: 'utf-8',
+    })
+    const currentHooksPath = existingPath.stdout.trim()
+    let previousHooksPath: string | undefined
+
+    if (currentHooksPath && currentHooksPath !== GLOBAL_HOOKS_DIR) {
+      if (!options.force) {
+        console.error(`Error: core.hooksPath is already set to: ${currentHooksPath}`)
+        console.error('Use --force to chain to existing hooks.')
+        process.exit(1)
+      }
+      // Save the previous path so we can chain to it
+      previousHooksPath = currentHooksPath
+      console.log(`Chaining to existing hooks: ${currentHooksPath}`)
+    }
+
+    // Create hooks directory
+    if (!existsSync(GLOBAL_HOOKS_DIR)) {
+      mkdirSync(GLOBAL_HOOKS_DIR, { recursive: true })
+    }
+
+    // Save hooks config (previous path for chaining and uninstall)
+    const hooksConfig: HooksConfig = {}
+    if (previousHooksPath) {
+      hooksConfig.previousHooksPath = previousHooksPath
+    }
+    saveHooksConfig(hooksConfig)
+
+    // Write pre-commit hook with chaining
+    const hookPath = join(GLOBAL_HOOKS_DIR, 'pre-commit')
+    writeFileSync(hookPath, generatePreCommitHook(previousHooksPath))
+    execSync(`chmod +x "${hookPath}"`)
+
+    // Set global core.hooksPath
+    execSync(`git config --global core.hooksPath "${GLOBAL_HOOKS_DIR}"`)
+
+    console.log('Installed global pre-commit hook.')
+    console.log(`  Hooks directory: ${GLOBAL_HOOKS_DIR}`)
+    if (previousHooksPath) {
+      console.log(`  Chaining to: ${previousHooksPath}`)
+    }
+    console.log('  Also chains to local .git/hooks/pre-commit if present')
+  })
+
+hooks
+  .command('uninstall')
+  .description('Remove global git pre-commit hook')
+  .action(() => {
+    // Check if our hooks are installed
+    const existingPath = spawnSync('git', ['config', '--global', 'core.hooksPath'], {
+      encoding: 'utf-8',
+    })
+    const currentHooksPath = existingPath.stdout.trim()
+
+    if (currentHooksPath !== GLOBAL_HOOKS_DIR) {
+      if (currentHooksPath) {
+        console.log(`core.hooksPath is set to a different directory: ${currentHooksPath}`)
+        console.log('Not modifying.')
+      } else {
+        console.log('No global hooks path configured.')
+      }
+      return
+    }
+
+    // Load hooks config to check for previous path
+    const hooksConfig = loadHooksConfig()
+
+    // Restore previous core.hooksPath or unset
+    if (hooksConfig.previousHooksPath) {
+      execSync(`git config --global core.hooksPath "${hooksConfig.previousHooksPath}"`)
+      console.log(`Restored previous core.hooksPath: ${hooksConfig.previousHooksPath}`)
+    } else {
+      execSync('git config --global --unset core.hooksPath')
+      console.log('Unset core.hooksPath')
+    }
+
+    // Remove hook file
+    const hookPath = join(GLOBAL_HOOKS_DIR, 'pre-commit')
+    if (existsSync(hookPath)) {
+      execSync(`rm "${hookPath}"`)
+    }
+
+    // Remove hooks config
+    if (existsSync(HOOKS_CONFIG_FILE)) {
+      execSync(`rm "${HOOKS_CONFIG_FILE}"`)
+    }
+
+    console.log('Removed pds pre-commit hook.')
+  })
+
+hooks
+  .command('status')
+  .description('Show hooks installation status')
+  .action(() => {
+    const existingPath = spawnSync('git', ['config', '--global', 'core.hooksPath'], {
+      encoding: 'utf-8',
+    })
+    const currentHooksPath = existingPath.stdout.trim()
+
+    if (!currentHooksPath) {
+      console.log('Status: Not installed')
+      console.log('  No global core.hooksPath configured')
+      return
+    }
+
+    if (currentHooksPath === GLOBAL_HOOKS_DIR) {
+      const hookPath = join(GLOBAL_HOOKS_DIR, 'pre-commit')
+      const hookExists = existsSync(hookPath)
+      const hooksConfig = loadHooksConfig()
+      console.log('Status: Installed')
+      console.log(`  core.hooksPath: ${currentHooksPath}`)
+      console.log(`  pre-commit hook: ${hookExists ? 'present' : 'missing'}`)
+      if (hooksConfig.previousHooksPath) {
+        console.log(`  chaining to: ${hooksConfig.previousHooksPath}`)
+      }
+      console.log('  chains to local .git/hooks/pre-commit if present')
+    } else {
+      console.log('Status: Different hooks path configured')
+      console.log(`  core.hooksPath: ${currentHooksPath}`)
+      console.log(`  (not managed by pds)`)
+    }
   })
 
 // Default to 'list' command when no arguments provided
