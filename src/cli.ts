@@ -1830,9 +1830,44 @@ hooks
     }
   })
 
-// Default to 'list' command when no arguments provided
+const SHELL_ALIASES = `# pds shell aliases
+# Add to your shell rc file: eval "$(pds shell-integration)"
+
+alias pdl='pds l'      # local
+alias pdg='pds g'      # git (auto-detect GitHub/GitLab)
+alias pdgh='pds gh'    # github
+alias pdgl='pds gl'    # gitlab
+alias pdsn='pds n'     # npm
+alias pdsv='pds v'     # versions
+alias pdss='pds s'     # status
+alias pdsc='pds check' # check for local deps
+alias pdsi='pds init'  # init
+alias pdsr='pds rm'    # remove/deinit
+`
+
+program
+  .command('shell-integration')
+  .alias('shell')
+  .description('Output shell aliases for eval (add to .bashrc/.zshrc)')
+  .action(() => {
+    console.log(SHELL_ALIASES)
+  })
+
+// Default to 'list' if deps configured, otherwise show help
 if (process.argv.length <= 2) {
-  process.argv.push('list')
+  // Check if there are any deps configured
+  try {
+    const projectRoot = findProjectRoot()
+    const config = loadConfig(projectRoot)
+    if (Object.keys(config.dependencies).length > 0) {
+      process.argv.push('list')
+    } else {
+      process.argv.push('--help')
+    }
+  } catch {
+    // Not in a project or error - show help
+    process.argv.push('--help')
+  }
 }
 
 try {
