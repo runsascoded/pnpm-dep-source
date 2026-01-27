@@ -808,11 +808,46 @@ program
     }
     console.log(`Removed ${name} from ${isGlobal ? 'global ' : ''}config`);
 });
+// Fetch remote version info for a dependency (for verbose listing)
+function fetchRemoteVersions(dep, depName) {
+    const result = {};
+    const distBranch = dep.distBranch ?? 'dist';
+    // Fetch npm version
+    const npmName = dep.npm ?? depName;
+    try {
+        result.npm = getLatestNpmVersion(npmName);
+    }
+    catch {
+        // Ignore errors - package may not be on npm
+    }
+    // Fetch GitHub dist branch SHA
+    if (dep.github) {
+        try {
+            const sha = resolveGitHubRef(dep.github, distBranch);
+            result.github = sha.slice(0, 7);
+        }
+        catch {
+            // Ignore errors - dist branch may not exist
+        }
+    }
+    // Fetch GitLab dist branch SHA
+    if (dep.gitlab) {
+        try {
+            const sha = resolveGitLabRef(dep.gitlab, distBranch);
+            result.gitlab = sha.slice(0, 7);
+        }
+        catch {
+            // Ignore errors - dist branch may not exist
+        }
+    }
+    return result;
+}
 program
     .command('list')
     .alias('ls')
     .description('List configured dependencies and their current sources')
     .option('-g, --global', 'List global dependencies')
+    .option('-v, --verbose', 'Show available remote versions')
     .action((options) => {
     if (options.global) {
         const config = loadGlobalConfig();
@@ -831,6 +866,15 @@ program
                 console.log(`  GitLab: ${dep.gitlab}`);
             if (dep.npm)
                 console.log(`  NPM: ${dep.npm}`);
+            if (options.verbose) {
+                const versions = fetchRemoteVersions(dep, name);
+                if (versions.npm)
+                    console.log(`  NPM latest: ${versions.npm}`);
+                if (versions.github)
+                    console.log(`  GitHub dist: ${versions.github}`);
+                if (versions.gitlab)
+                    console.log(`  GitLab dist: ${versions.gitlab}`);
+            }
         }
         return;
     }
@@ -852,6 +896,77 @@ program
             console.log(`  GitLab: ${dep.gitlab}`);
         if (dep.npm)
             console.log(`  NPM: ${dep.npm}`);
+        if (options.verbose) {
+            const versions = fetchRemoteVersions(dep, name);
+            if (versions.npm)
+                console.log(`  NPM latest: ${versions.npm}`);
+            if (versions.github)
+                console.log(`  GitHub dist: ${versions.github}`);
+            if (versions.gitlab)
+                console.log(`  GitLab dist: ${versions.gitlab}`);
+        }
+    }
+});
+program
+    .command('versions')
+    .alias('v')
+    .description('List dependencies with available remote versions (alias for ls -v)')
+    .option('-g, --global', 'List global dependencies')
+    .action((options) => {
+    // Re-use the list command logic with verbose=true
+    const isGlobal = options.global;
+    if (isGlobal) {
+        const config = loadGlobalConfig();
+        if (Object.keys(config.dependencies).length === 0) {
+            console.log('No global dependencies configured. Use "pds init -G <path>" to add one.');
+            return;
+        }
+        for (const [name, dep] of Object.entries(config.dependencies)) {
+            const installSource = getGlobalInstallSource(name);
+            console.log(`${name}:`);
+            console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`);
+            console.log(`  Local: ${dep.localPath}`);
+            if (dep.github)
+                console.log(`  GitHub: ${dep.github}`);
+            if (dep.gitlab)
+                console.log(`  GitLab: ${dep.gitlab}`);
+            if (dep.npm)
+                console.log(`  NPM: ${dep.npm}`);
+            const versions = fetchRemoteVersions(dep, name);
+            if (versions.npm)
+                console.log(`  NPM latest: ${versions.npm}`);
+            if (versions.github)
+                console.log(`  GitHub dist: ${versions.github}`);
+            if (versions.gitlab)
+                console.log(`  GitLab dist: ${versions.gitlab}`);
+        }
+        return;
+    }
+    const projectRoot = findProjectRoot();
+    const config = loadConfig(projectRoot);
+    const pkg = loadPackageJson(projectRoot);
+    if (Object.keys(config.dependencies).length === 0) {
+        console.log('No dependencies configured. Use "pnpm-dep-source init <path>" to add one.');
+        return;
+    }
+    for (const [name, dep] of Object.entries(config.dependencies)) {
+        const current = getCurrentSource(pkg, name);
+        console.log(`${name}:`);
+        console.log(`  Current: ${current}`);
+        console.log(`  Local: ${dep.localPath}`);
+        if (dep.github)
+            console.log(`  GitHub: ${dep.github}`);
+        if (dep.gitlab)
+            console.log(`  GitLab: ${dep.gitlab}`);
+        if (dep.npm)
+            console.log(`  NPM: ${dep.npm}`);
+        const versions = fetchRemoteVersions(dep, name);
+        if (versions.npm)
+            console.log(`  NPM latest: ${versions.npm}`);
+        if (versions.github)
+            console.log(`  GitHub dist: ${versions.github}`);
+        if (versions.gitlab)
+            console.log(`  GitLab dist: ${versions.gitlab}`);
     }
 });
 program
@@ -901,6 +1016,7 @@ program
     .aliases(['gh'])
     .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
@@ -928,6 +1044,10 @@ program
         resolvedRef = resolveGitHubRef(depConfig.github, distBranch);
     }
     const specifier = `github:${depConfig.github}#${resolvedRef}`;
+    if (options.dryRun) {
+        console.log(`Would switch ${depName} to: ${specifier}`);
+        return;
+    }
     if (options.global) {
         runGlobalInstall(specifier);
         console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`);
@@ -961,6 +1081,7 @@ program
     .aliases(['gl'])
     .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
@@ -991,6 +1112,10 @@ program
     // Format: https://gitlab.com/{repo}/-/archive/{ref}/{basename}-{ref}.tar.gz
     const repoBasename = depConfig.gitlab.split('/').pop();
     const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`;
+    if (options.dryRun) {
+        console.log(`Would switch ${depName} to: ${tarballUrl}`);
+        return;
+    }
     if (options.global) {
         runGlobalInstall(tarballUrl);
         console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`);
@@ -1024,6 +1149,7 @@ program
     .alias('g')
     .description('Switch dependency to GitHub or GitLab (auto-detects which is configured)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
@@ -1053,32 +1179,43 @@ program
             ? resolveGitHubRef(depConfig.github, options.ref)
             : resolveGitLabRef(depConfig.gitlab, options.ref);
     }
-    // If no ref specified, let the helper resolve the dist branch
-    if (options.global) {
-        if (hasGitHub) {
-            const ref = resolvedRef ?? resolveGitHubRef(depConfig.github, distBranch);
-            const specifier = `github:${depConfig.github}#${ref}`;
+    // Resolve ref for dry-run or actual switch
+    if (hasGitHub) {
+        const ref = resolvedRef ?? resolveGitHubRef(depConfig.github, distBranch);
+        const specifier = `github:${depConfig.github}#${ref}`;
+        if (options.dryRun) {
+            console.log(`Would switch ${depName} to: ${specifier}`);
+            return;
+        }
+        if (options.global) {
             runGlobalInstall(specifier);
             console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`);
+            return;
         }
-        else {
-            const ref = resolvedRef ?? resolveGitLabRef(depConfig.gitlab, distBranch);
-            const repoBasename = depConfig.gitlab.split('/').pop();
-            const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`;
-            runGlobalInstall(tarballUrl);
-            console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`);
+        const projectRoot = findProjectRoot();
+        switchToGitHub(projectRoot, depName, depConfig, ref);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
         }
-        return;
-    }
-    const projectRoot = findProjectRoot();
-    if (hasGitHub) {
-        switchToGitHub(projectRoot, depName, depConfig, resolvedRef);
     }
     else {
-        switchToGitLab(projectRoot, depName, depConfig, resolvedRef);
-    }
-    if (options.install) {
-        runPnpmInstall(projectRoot);
+        const ref = resolvedRef ?? resolveGitLabRef(depConfig.gitlab, distBranch);
+        const repoBasename = depConfig.gitlab.split('/').pop();
+        const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`;
+        if (options.dryRun) {
+            console.log(`Would switch ${depName} to: ${tarballUrl}`);
+            return;
+        }
+        if (options.global) {
+            runGlobalInstall(tarballUrl);
+            console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`);
+            return;
+        }
+        const projectRoot = findProjectRoot();
+        switchToGitLab(projectRoot, depName, depConfig, ref);
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
     }
 });
 program
@@ -1086,6 +1223,7 @@ program
     .alias('n')
     .description('Switch dependency to NPM (defaults to latest)')
     .option('-g, --global', 'Install globally (uses global config)')
+    .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((arg1, arg2, options) => {
     const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
@@ -1105,15 +1243,19 @@ program
     const npmName = depConfig.npm ?? depName;
     // Resolve latest version from NPM if not specified
     const resolvedVersion = version ?? getLatestNpmVersion(npmName);
-    const specifier = `${npmName}@${resolvedVersion}`;
+    const specifier = `^${resolvedVersion}`;
+    if (options.dryRun) {
+        console.log(`Would switch ${depName} to: ${specifier}`);
+        return;
+    }
     if (options.global) {
-        runGlobalInstall(specifier);
-        console.log(`Installed ${depName} globally from NPM: ${specifier}`);
+        runGlobalInstall(`${npmName}@${resolvedVersion}`);
+        console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`);
         return;
     }
     const projectRoot = findProjectRoot();
     const pkg = loadPackageJson(projectRoot);
-    updatePackageJsonDep(pkg, depName, `^${resolvedVersion}`);
+    updatePackageJsonDep(pkg, depName, specifier);
     removePnpmOverride(pkg, depName);
     savePackageJson(projectRoot, pkg);
     // Remove from pnpm-workspace.yaml
@@ -1129,7 +1271,7 @@ program
     }
     // Remove from vite.config.ts optimizeDeps.exclude
     updateViteConfig(projectRoot, depName, false);
-    console.log(`Switched ${depName} to NPM: ^${resolvedVersion}`);
+    console.log(`Switched ${depName} to NPM: ${specifier}`);
     if (options.install) {
         runPnpmInstall(projectRoot);
     }
