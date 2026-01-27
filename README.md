@@ -59,6 +59,7 @@ This will:
 pds g [dep]                   # Auto-detects GitHub or GitLab (uses dist branch HEAD)
 pds g [dep] -r v1.0.0         # Resolves ref to SHA
 pds g [dep] -R dist           # Uses ref as-is (pin to branch name)
+pds g [dep] -n                # Dry-run: show what would be installed
 ```
 
 Errors if neither or both are configured; use `pds gh` or `pds gl` explicitly in that case.
@@ -69,6 +70,7 @@ Errors if neither or both are configured; use `pds gh` or `pds gl` explicitly in
 pds github [dep]              # Uses dist branch HEAD (resolved to SHA)
 pds gh [dep] -r v1.0.0        # Resolves ref to SHA
 pds gh [dep] -R dist          # Uses ref as-is (pin to branch name)
+pds gh [dep] -n               # Dry-run: show what would be installed
 ```
 
 This will:
@@ -83,6 +85,7 @@ This will:
 pds gitlab [dep]              # Uses dist branch HEAD (resolved to SHA)
 pds gl [dep] -r v1.0.0        # Resolves ref to SHA
 pds gl [dep] -R dist          # Uses ref as-is (pin to branch name)
+pds gl [dep] -n               # Dry-run: show what would be installed
 ```
 
 This will:
@@ -99,6 +102,7 @@ Note: GitLab uses tarball URLs (e.g. `https://gitlab.com/user/repo/-/archive/ref
 pds npm [dep]              # Latest version
 pds npm [dep] [version]    # Specific version
 pds n 1.2.3                # With one dep, arg is treated as version
+pds n [dep] -n             # Dry-run: show what would be installed
 ```
 
 ### Check status
@@ -114,6 +118,8 @@ pds s                # Alias
 ```bash
 pds         # defaults to list
 pds list    # or pds ls
+pds ls -v   # include available remote versions
+pds versions  # or pds v (alias for ls -v)
 ```
 
 ### Update dependency fields
@@ -198,9 +204,10 @@ Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 - `-I, --no-install`: Skip running `pnpm install` after changes
 - `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
 - `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
-- `-n, --npm <name>`: NPM package name (defaults to package name)
+- `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`npm`)
 - `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab` commands)
 - `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)
+- `-v, --verbose`: Show available remote versions (for `list`)
 
 ## Global CLI tools
 
