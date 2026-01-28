@@ -950,10 +950,44 @@ program
     console.log(`Updated ${name}`)
   })
 
+function removeDependency(pkg: Record<string, unknown>, depName: string): boolean {
+  const deps = pkg.dependencies as Record<string, string> | undefined
+  const devDeps = pkg.devDependencies as Record<string, string> | undefined
+
+  if (deps && depName in deps) {
+    delete deps[depName]
+    return true
+  }
+  if (devDeps && depName in devDeps) {
+    delete devDeps[depName]
+    return true
+  }
+  return false
+}
+
+// Helper to clean up workspace/vite when removing a dep
+function cleanupDepReferences(projectRoot: string, depName: string, depConfig: DepConfig): void {
+  // Clean up pnpm-workspace.yaml if the dep was in it
+  if (depConfig.localPath) {
+    const ws = loadWorkspaceYaml(projectRoot)
+    if (ws?.packages) {
+      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
+      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(projectRoot, null)
+      } else {
+        saveWorkspaceYaml(projectRoot, ws)
+      }
+    }
+  }
+
+  // Clean up vite.config.ts
+  updateViteConfig(projectRoot, depName, false)
+}
+
 program
   .command('deinit [dep]')
-  .aliases(['rm', 'remove'])
-  .description('Remove a dependency from config')
+  .alias('di')
+  .description('Stop tracking a dependency with pds (keeps in package.json)')
   .action((depQuery: string | undefined) => {
     const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
@@ -961,25 +995,11 @@ program
 
     const [name, depConfig] = findMatchingDep(config, depQuery)
 
-    // Remove from config
+    // Remove from pds config
     delete config.dependencies[name]
 
     if (!isGlobal) {
-      // Clean up pnpm-workspace.yaml if the dep was in it
-      if (depConfig.localPath) {
-        const ws = loadWorkspaceYaml(projectRoot)
-        if (ws?.packages) {
-          ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-          if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-            saveWorkspaceYaml(projectRoot, null)
-          } else {
-            saveWorkspaceYaml(projectRoot, ws)
-          }
-        }
-      }
-
-      // Clean up vite.config.ts
-      updateViteConfig(projectRoot, name, false)
+      cleanupDepReferences(projectRoot, name, depConfig)
     }
 
     if (isGlobal) {
@@ -988,7 +1008,45 @@ program
       saveConfig(projectRoot, config)
     }
 
-    console.log(`Removed ${name} from ${isGlobal ? 'global ' : ''}config`)
+    console.log(`Stopped tracking ${name}${isGlobal ? ' (global)' : ''}`)
+  })
+
+program
+  .command('rm [dep]')
+  .aliases(['r', 'remove'])
+  .description('Remove a dependency from pds config and package.json')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .action((depQuery: string | undefined, options: { install: boolean }) => {
+    const isGlobal = program.opts().global
+    const projectRoot = isGlobal ? '' : findProjectRoot()
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
+
+    const [name, depConfig] = findMatchingDep(config, depQuery)
+
+    // Remove from pds config
+    delete config.dependencies[name]
+
+    if (isGlobal) {
+      saveGlobalConfig(config)
+      // Uninstall globally
+      console.log(`Removing ${name} globally...`)
+      execSync(`pnpm rm -g ${depConfig.npm ?? name}`, { stdio: 'inherit' })
+      console.log(`Removed ${name} (global)`)
+    } else {
+      cleanupDepReferences(projectRoot, name, depConfig)
+      saveConfig(projectRoot, config)
+
+      // Remove from package.json
+      const pkg = loadPackageJson(projectRoot)
+      if (removeDependency(pkg, name)) {
+        savePackageJson(projectRoot, pkg)
+        console.log(`Removed ${name} from package.json`)
+      }
+
+      if (options.install) {
+        runPnpmInstall(projectRoot)
+      }
+    }
   })
 
 // Fetch remote version info for a dependency (for verbose listing)
@@ -1883,9 +1941,9 @@ alias pdsn='pds n'     # npm
 alias pdsv='pds v'     # versions
 alias pdss='pds s'     # status
 alias pdsc='pds check' # check for local deps
-alias pdr='pds rm'     # remove/deinit
-alias pdgr='pds -g rm' # global remove/deinit
-alias pdsr='pds rm'    # remove/deinit (alt)
+alias pddi='pds di'    # deinit (stop tracking, keep in package.json)
+alias pdr='pds rm'     # remove (from pds config and package.json)
+alias pdgr='pds -g rm' # global remove
 `
 
 program

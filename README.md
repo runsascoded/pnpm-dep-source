@@ -133,14 +133,23 @@ pds set <dep> -H ""             # Remove GitHub
 pds -g set                      # Update global config (with single dep)
 ```
 
-### Remove a dependency from config
+### Stop tracking a dependency
 
 ```bash
-pds deinit [dep]    # or pds rm [dep]
-pds -g rm           # Remove from global config
+pds deinit [dep]    # or pds di [dep]
+pds -g di           # Stop tracking global dep
 ```
 
-This removes the dependency from `.pnpm-dep-source.json` but does not modify `package.json`.
+This removes the dependency from `.pnpm-dep-source.json` but keeps it in `package.json`.
+
+### Remove a dependency
+
+```bash
+pds rm [dep]        # or pds r [dep]
+pds -g rm           # Remove global dep
+```
+
+This removes the dependency from both `.pnpm-dep-source.json` and `package.json`, then runs `pnpm install`.
 
 ### Pre-commit hooks
 
