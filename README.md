@@ -29,7 +29,7 @@ pds init ../../path/to/local/pkg -H github-user/repo
 pds init ../../path/to/local/pkg -L gitlab-user/repo
 
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
-pds init /path/to/local/cli -g
+pds -g init /path/to/local/cli
 ```
 
 `init` **adds the dependency to `package.json`** if not present, then **auto-activates**:
@@ -130,14 +130,14 @@ pds set <dep> -L user/repo      # Set GitLab repo
 pds set <dep> -l ../path        # Set local path
 pds set <dep> -n pkg-name       # Set NPM name
 pds set <dep> -H ""             # Remove GitHub
-pds set -g                      # Update global config (with single dep)
+pds -g set                      # Update global config (with single dep)
 ```
 
 ### Remove a dependency from config
 
 ```bash
 pds deinit [dep]    # or pds rm [dep]
-pds rm -g           # Remove from global config
+pds -g rm           # Remove from global config
 ```
 
 This removes the dependency from `.pnpm-dep-source.json` but does not modify `package.json`.
@@ -196,10 +196,15 @@ Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 
 ## Options
 
+### Top-level options
+
+- `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools. Must come before the command: `pds -g ls`, `pds -g gh`, etc.
+
+### Command options
+
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
 - `-D, --dev`: Add as devDependency (for `init` when adding to package.json)
 - `-f, --force`: Suppress mismatch warnings in `init`
-- `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools
 - `-H, --github <repo>`: GitHub repo (auto-detected from package.json if not specified)
 - `-I, --no-install`: Skip running `pnpm install` after changes
 - `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
@@ -211,19 +216,20 @@ Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 
 ## Global CLI tools
 
-For managing globally-installed CLI tools, use `-g` with all commands:
+For managing globally-installed CLI tools, use `-g` before the command:
 
 ```bash
 # Initialize a global CLI tool
-pds init /path/to/local/cli -g -H github-user/repo
+pds -g init /path/to/local/cli -H github-user/repo
 
 # List global deps
-pds ls -g
+pds -g ls
+pds -g               # shorthand for pds -g ls
 
 # Switch global install source
-pds gh -g            # Install from GitHub dist branch
-pds l -g             # Install from local directory
-pds n -g             # Install from NPM
+pds -g gh            # Install from GitHub dist branch
+pds -g l             # Install from local directory
+pds -g n             # Install from NPM
 ```
 
 Global config is stored at `~/.config/pnpm-dep-source/config.json`.
@@ -281,16 +287,16 @@ cd pnpm-dep-source
 pnpm install && pnpm build
 
 # Register pds as its own global dependency
-pds init . -g
+pds -g init .
 
 # Develop locally
-pds l -g    # installs from local ./dist
+pds -g l    # installs from local ./dist
 
 # Test dist branch
-pds gh -g   # installs from GitHub dist branch
+pds -g gh   # installs from GitHub dist branch
 
 # Use NPM release
-pds n -g    # installs from NPM
+pds -g n    # installs from NPM
 ```
 
 ## License

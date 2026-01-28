@@ -682,6 +682,7 @@ program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
   .version(VERSION)
+  .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools')
 
 program
   .command('init <path-or-url>')
@@ -689,13 +690,13 @@ program
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
   .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
   .option('-f, --force', 'Suppress mismatch warnings')
-  .option('-g, --global', 'Add to global config (for CLI tools)')
   .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .action((pathOrUrl: string, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; global?: boolean; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
+  .action((pathOrUrl: string, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
+    const isGlobal = program.opts().global
     const isUrl = isRepoUrl(pathOrUrl)
     let pkgInfo: PackageInfo
     let localPath: string | undefined
@@ -739,7 +740,7 @@ program
     const github = options.github ?? pkgInfo.github
     const gitlab = options.gitlab ?? pkgInfo.gitlab
 
-    if (options.global) {
+    if (isGlobal) {
       const config = loadGlobalConfig()
       config.dependencies[pkgName] = {
         localPath,
@@ -830,13 +831,12 @@ program
   .command('set [dep]')
   .description('Update fields for an existing dependency')
   .option('-b, --dist-branch <branch>', 'Set dist branch')
-  .option('-g, --global', 'Update global config')
   .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
   .option('-l, --local <path>', 'Set local path (use "" to remove)')
   .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
   .option('-n, --npm <name>', 'Set NPM package name')
-  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; global?: boolean; gitlab?: string; local?: string; npm?: string }) => {
-    const isGlobal = options.global
+  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; gitlab?: string; local?: string; npm?: string }) => {
+    const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
 
@@ -911,9 +911,8 @@ program
   .command('deinit [dep]')
   .aliases(['rm', 'remove'])
   .description('Remove a dependency from config')
-  .option('-g, --global', 'Remove from global config')
-  .action((depQuery: string | undefined, options: { global?: boolean }) => {
-    const isGlobal = options.global
+  .action((depQuery: string | undefined) => {
+    const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
 
@@ -989,10 +988,9 @@ program
   .command('list')
   .alias('ls')
   .description('List configured dependencies and their current sources')
-  .option('-g, --global', 'List global dependencies')
   .option('-v, --verbose', 'Show available remote versions')
-  .action((options: { global?: boolean; verbose?: boolean }) => {
-    if (options.global) {
+  .action((options: { verbose?: boolean }) => {
+    if (program.opts().global) {
       const config = loadGlobalConfig()
 
       if (Object.keys(config.dependencies).length === 0) {
@@ -1050,10 +1048,9 @@ program
   .command('versions')
   .alias('v')
   .description('List dependencies with available remote versions (alias for ls -v)')
-  .option('-g, --global', 'List global dependencies')
-  .action((options: { global?: boolean }) => {
+  .action(() => {
     // Re-use the list command logic with verbose=true
-    const isGlobal = options.global
+    const isGlobal = program.opts().global
 
     if (isGlobal) {
       const config = loadGlobalConfig()
@@ -1109,10 +1106,9 @@ program
   .command('local [dep]')
   .alias('l')
   .description('Switch dependency to local directory')
-  .option('-g, --global', 'Install globally (uses global config)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; install: boolean }) => {
-    if (options.global) {
+  .action((depQuery: string | undefined, options: { install: boolean }) => {
+    if (program.opts().global) {
       const config = loadGlobalConfig()
       const [depName, depConfig] = findMatchingDep(config, depQuery)
       runGlobalInstall(`file:${depConfig.localPath}`)
@@ -1158,13 +1154,13 @@ program
   .command('github [dep]')
   .aliases(['gh'])
   .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
-  .option('-g, --global', 'Install globally (uses global config)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
+  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.github) {
@@ -1196,7 +1192,7 @@ program
       return
     }
 
-    if (options.global) {
+    if (isGlobal) {
       runGlobalInstall(specifier)
       console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`)
       return
@@ -1234,13 +1230,13 @@ program
   .command('gitlab [dep]')
   .aliases(['gl'])
   .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
-  .option('-g, --global', 'Install globally (uses global config)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
+  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (!depConfig.gitlab) {
@@ -1275,7 +1271,7 @@ program
       return
     }
 
-    if (options.global) {
+    if (isGlobal) {
       runGlobalInstall(tarballUrl)
       console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`)
       return
@@ -1313,13 +1309,13 @@ program
   .command('git [dep]')
   .alias('g')
   .description('Switch dependency to GitHub or GitLab (auto-detects which is configured)')
-  .option('-g, --global', 'Install globally (uses global config)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { global: boolean; dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
+  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
     if (options.ref && options.rawRef) {
@@ -1359,7 +1355,7 @@ program
         return
       }
 
-      if (options.global) {
+      if (isGlobal) {
         runGlobalInstall(specifier)
         console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`)
         return
@@ -1380,7 +1376,7 @@ program
         return
       }
 
-      if (options.global) {
+      if (isGlobal) {
         runGlobalInstall(tarballUrl)
         console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`)
         return
@@ -1398,11 +1394,11 @@ program
   .command('npm [dep] [version]')
   .alias('n')
   .description('Switch dependency to NPM (defaults to latest)')
-  .option('-g, --global', 'Install globally (uses global config)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((arg1: string | undefined, arg2: string | undefined, options: { global: boolean; dryRun?: boolean; install: boolean }) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot())
+  .action((arg1: string | undefined, arg2: string | undefined, options: { dryRun?: boolean; install: boolean }) => {
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const deps = Object.entries(config.dependencies)
 
     // If only one arg and exactly one dep configured, treat arg as version
@@ -1428,7 +1424,7 @@ program
       return
     }
 
-    if (options.global) {
+    if (isGlobal) {
       runGlobalInstall(`${npmName}@${resolvedVersion}`)
       console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`)
       return
@@ -1466,9 +1462,8 @@ program
   .command('status [dep]')
   .alias('s')
   .description('Show current source for dependency (or all if none specified)')
-  .option('-g, --global', 'Show status of global dependencies')
-  .action((depQuery: string | undefined, options: { global?: boolean }) => {
-    if (options.global) {
+  .action((depQuery: string | undefined) => {
+    if (program.opts().global) {
       const config = loadGlobalConfig()
       const deps = depQuery
         ? [findMatchingDep(config, depQuery)]
@@ -1833,16 +1828,21 @@ hooks
 const SHELL_ALIASES = `# pds shell aliases
 # Add to your shell rc file: eval "$(pds shell-integration)"
 
+alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
+alias pdgi='pds -g init'  # global init
+alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
+alias pdi='pds init'   # init
+alias pdsi='pds init'  # init (alt)
 alias pdl='pds l'      # local
-alias pdg='pds g'      # git (auto-detect GitHub/GitLab)
 alias pdgh='pds gh'    # github
 alias pdgl='pds gl'    # gitlab
 alias pdsn='pds n'     # npm
 alias pdsv='pds v'     # versions
 alias pdss='pds s'     # status
 alias pdsc='pds check' # check for local deps
-alias pdsi='pds init'  # init
-alias pdsr='pds rm'    # remove/deinit
+alias pdr='pds rm'     # remove/deinit
+alias pdgr='pds -g rm' # global remove/deinit
+alias pdsr='pds rm'    # remove/deinit (alt)
 `
 
 program
@@ -1854,15 +1854,27 @@ program
   })
 
 // Default to 'list' if deps configured, otherwise show help
-if (process.argv.length <= 2) {
+// Also handle `pds -g` as shorthand for `pds -g ls`
+const hasOnlyGlobalFlag = process.argv.length === 3 && (process.argv[2] === '-g' || process.argv[2] === '--global')
+if (process.argv.length <= 2 || hasOnlyGlobalFlag) {
   // Check if there are any deps configured
+  const isGlobal = hasOnlyGlobalFlag
   try {
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
-    if (Object.keys(config.dependencies).length > 0) {
-      process.argv.push('list')
+    if (isGlobal) {
+      const config = loadGlobalConfig()
+      if (Object.keys(config.dependencies).length > 0) {
+        process.argv.push('list')
+      } else {
+        process.argv.push('--help')
+      }
     } else {
-      process.argv.push('--help')
+      const projectRoot = findProjectRoot()
+      const config = loadConfig(projectRoot)
+      if (Object.keys(config.dependencies).length > 0) {
+        process.argv.push('list')
+      } else {
+        process.argv.push('--help')
+      }
     }
   } catch {
     // Not in a project or error - show help
