@@ -136,14 +136,55 @@ function loadWorkspaceYaml(projectRoot) {
 }
 function saveWorkspaceYaml(projectRoot, config) {
     const wsPath = join(projectRoot, 'pnpm-workspace.yaml');
-    if (!config || !config.packages || config.packages.length === 0) {
-        if (existsSync(wsPath)) {
-            execSync(`rm ${wsPath}`);
-        }
-        return;
+    let existingContent = '';
+    if (existsSync(wsPath)) {
+        existingContent = readFileSync(wsPath, 'utf-8');
     }
-    const content = 'packages:\n' + config.packages.map(p => `  - ${p}`).join('\n') + '\n';
-    writeFileSync(wsPath, content);
+    // Remove existing packages section from content
+    const lines = existingContent.split('\n');
+    const filteredLines = [];
+    let inPackages = false;
+    for (const line of lines) {
+        if (line.match(/^packages:\s*$/)) {
+            inPackages = true;
+            continue;
+        }
+        if (inPackages) {
+            // Skip package list items (indented with -)
+            if (line.match(/^\s+-/)) {
+                continue;
+            }
+            // Non-indented non-empty line ends packages section
+            if (!line.match(/^\s/) && line.trim()) {
+                inPackages = false;
+                filteredLines.push(line);
+            }
+            // Skip empty/whitespace lines within packages section
+            continue;
+        }
+        filteredLines.push(line);
+    }
+    // Build new content
+    let newContent = filteredLines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    // Add packages section if we have packages
+    if (config?.packages && config.packages.length > 0) {
+        const packagesSection = 'packages:\n' + config.packages.map(p => `  - ${p}`).join('\n');
+        if (newContent) {
+            newContent = newContent + '\n\n' + packagesSection + '\n';
+        }
+        else {
+            newContent = packagesSection + '\n';
+        }
+        writeFileSync(wsPath, newContent);
+    }
+    else if (newContent) {
+        // No packages but other content exists - keep the file without packages section
+        writeFileSync(wsPath, newContent + '\n');
+    }
+    else if (existsSync(wsPath)) {
+        // No packages and no other content - remove the file
+        execSync(`rm "${wsPath}"`);
+    }
 }
 function findMatchingDep(config, query) {
     const deps = Object.entries(config.dependencies);
@@ -553,20 +594,21 @@ function switchToGitLab(projectRoot, depName, depConfig, ref) {
 program
     .name('pnpm-dep-source')
     .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
-    .version(VERSION);
+    .version(VERSION)
+    .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools');
 program
     .command('init <path-or-url>')
     .description('Initialize a dependency from local path or repo URL and activate it')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
     .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
     .option('-f, --force', 'Suppress mismatch warnings')
-    .option('-g, --global', 'Add to global config (for CLI tools)')
     .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
     .option('-I, --no-install', 'Skip running pnpm install')
     .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
     .option('-l, --local <path>', 'Local path (when initializing from URL)')
     .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
     .action((pathOrUrl, options) => {
+    const isGlobal = program.opts().global;
     const isUrl = isRepoUrl(pathOrUrl);
     let pkgInfo;
     let localPath;
@@ -608,7 +650,7 @@ program
     const npmName = options.npm ?? pkgName;
     const github = options.github ?? pkgInfo.github;
     const gitlab = options.gitlab ?? pkgInfo.gitlab;
-    if (options.global) {
+    if (isGlobal) {
         const config = loadGlobalConfig();
         config.dependencies[pkgName] = {
             localPath,
@@ -700,13 +742,12 @@ program
     .command('set [dep]')
     .description('Update fields for an existing dependency')
     .option('-b, --dist-branch <branch>', 'Set dist branch')
-    .option('-g, --global', 'Update global config')
     .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
     .option('-l, --local <path>', 'Set local path (use "" to remove)')
     .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
     .option('-n, --npm <name>', 'Set NPM package name')
     .action((depQuery, options) => {
-    const isGlobal = options.global;
+    const isGlobal = program.opts().global;
     const projectRoot = isGlobal ? '' : findProjectRoot();
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot);
     const [name, dep] = findMatchingDep(config, depQuery);
@@ -771,34 +812,50 @@ program
     }
     console.log(`Updated ${name}`);
 });
+function removeDependency(pkg, depName) {
+    const deps = pkg.dependencies;
+    const devDeps = pkg.devDependencies;
+    if (deps && depName in deps) {
+        delete deps[depName];
+        return true;
+    }
+    if (devDeps && depName in devDeps) {
+        delete devDeps[depName];
+        return true;
+    }
+    return false;
+}
+// Helper to clean up workspace/vite when removing a dep
+function cleanupDepReferences(projectRoot, depName, depConfig) {
+    // Clean up pnpm-workspace.yaml if the dep was in it
+    if (depConfig.localPath) {
+        const ws = loadWorkspaceYaml(projectRoot);
+        if (ws?.packages) {
+            ws.packages = ws.packages.filter(p => p !== depConfig.localPath);
+            if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+                saveWorkspaceYaml(projectRoot, null);
+            }
+            else {
+                saveWorkspaceYaml(projectRoot, ws);
+            }
+        }
+    }
+    // Clean up vite.config.ts
+    updateViteConfig(projectRoot, depName, false);
+}
 program
     .command('deinit [dep]')
-    .aliases(['rm', 'remove'])
-    .description('Remove a dependency from config')
-    .option('-g, --global', 'Remove from global config')
-    .action((depQuery, options) => {
-    const isGlobal = options.global;
+    .alias('di')
+    .description('Stop tracking a dependency with pds (keeps in package.json)')
+    .action((depQuery) => {
+    const isGlobal = program.opts().global;
     const projectRoot = isGlobal ? '' : findProjectRoot();
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot);
     const [name, depConfig] = findMatchingDep(config, depQuery);
-    // Remove from config
+    // Remove from pds config
     delete config.dependencies[name];
     if (!isGlobal) {
-        // Clean up pnpm-workspace.yaml if the dep was in it
-        if (depConfig.localPath) {
-            const ws = loadWorkspaceYaml(projectRoot);
-            if (ws?.packages) {
-                ws.packages = ws.packages.filter(p => p !== depConfig.localPath);
-                if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-                    saveWorkspaceYaml(projectRoot, null);
-                }
-                else {
-                    saveWorkspaceYaml(projectRoot, ws);
-                }
-            }
-        }
-        // Clean up vite.config.ts
-        updateViteConfig(projectRoot, name, false);
+        cleanupDepReferences(projectRoot, name, depConfig);
     }
     if (isGlobal) {
         saveGlobalConfig(config);
@@ -806,7 +863,40 @@ program
     else {
         saveConfig(projectRoot, config);
     }
-    console.log(`Removed ${name} from ${isGlobal ? 'global ' : ''}config`);
+    console.log(`Stopped tracking ${name}${isGlobal ? ' (global)' : ''}`);
+});
+program
+    .command('rm [dep]')
+    .aliases(['r', 'remove'])
+    .description('Remove a dependency from pds config and package.json')
+    .option('-I, --no-install', 'Skip running pnpm install')
+    .action((depQuery, options) => {
+    const isGlobal = program.opts().global;
+    const projectRoot = isGlobal ? '' : findProjectRoot();
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot);
+    const [name, depConfig] = findMatchingDep(config, depQuery);
+    // Remove from pds config
+    delete config.dependencies[name];
+    if (isGlobal) {
+        saveGlobalConfig(config);
+        // Uninstall globally
+        console.log(`Removing ${name} globally...`);
+        execSync(`pnpm rm -g ${depConfig.npm ?? name}`, { stdio: 'inherit' });
+        console.log(`Removed ${name} (global)`);
+    }
+    else {
+        cleanupDepReferences(projectRoot, name, depConfig);
+        saveConfig(projectRoot, config);
+        // Remove from package.json
+        const pkg = loadPackageJson(projectRoot);
+        if (removeDependency(pkg, name)) {
+            savePackageJson(projectRoot, pkg);
+            console.log(`Removed ${name} from package.json`);
+        }
+        if (options.install) {
+            runPnpmInstall(projectRoot);
+        }
+    }
 });
 // Fetch remote version info for a dependency (for verbose listing)
 function fetchRemoteVersions(dep, depName) {
@@ -846,10 +936,9 @@ program
     .command('list')
     .alias('ls')
     .description('List configured dependencies and their current sources')
-    .option('-g, --global', 'List global dependencies')
     .option('-v, --verbose', 'Show available remote versions')
     .action((options) => {
-    if (options.global) {
+    if (program.opts().global) {
         const config = loadGlobalConfig();
         if (Object.keys(config.dependencies).length === 0) {
             console.log('No global dependencies configured. Use "pds init -G <path>" to add one.');
@@ -911,10 +1000,9 @@ program
     .command('versions')
     .alias('v')
     .description('List dependencies with available remote versions (alias for ls -v)')
-    .option('-g, --global', 'List global dependencies')
-    .action((options) => {
+    .action(() => {
     // Re-use the list command logic with verbose=true
-    const isGlobal = options.global;
+    const isGlobal = program.opts().global;
     if (isGlobal) {
         const config = loadGlobalConfig();
         if (Object.keys(config.dependencies).length === 0) {
@@ -973,10 +1061,9 @@ program
     .command('local [dep]')
     .alias('l')
     .description('Switch dependency to local directory')
-    .option('-g, --global', 'Install globally (uses global config)')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((depQuery, options) => {
-    if (options.global) {
+    if (program.opts().global) {
         const config = loadGlobalConfig();
         const [depName, depConfig] = findMatchingDep(config, depQuery);
         runGlobalInstall(`file:${depConfig.localPath}`);
@@ -1015,13 +1102,13 @@ program
     .command('github [dep]')
     .aliases(['gh'])
     .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
-    .option('-g, --global', 'Install globally (uses global config)')
     .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((depQuery, options) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    const isGlobal = program.opts().global;
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     if (!depConfig.github) {
         throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`);
@@ -1048,7 +1135,7 @@ program
         console.log(`Would switch ${depName} to: ${specifier}`);
         return;
     }
-    if (options.global) {
+    if (isGlobal) {
         runGlobalInstall(specifier);
         console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`);
         return;
@@ -1080,13 +1167,13 @@ program
     .command('gitlab [dep]')
     .aliases(['gl'])
     .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
-    .option('-g, --global', 'Install globally (uses global config)')
     .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((depQuery, options) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    const isGlobal = program.opts().global;
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     if (!depConfig.gitlab) {
         throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`);
@@ -1116,7 +1203,7 @@ program
         console.log(`Would switch ${depName} to: ${tarballUrl}`);
         return;
     }
-    if (options.global) {
+    if (isGlobal) {
         runGlobalInstall(tarballUrl);
         console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`);
         return;
@@ -1148,13 +1235,13 @@ program
     .command('git [dep]')
     .alias('g')
     .description('Switch dependency to GitHub or GitLab (auto-detects which is configured)')
-    .option('-g, --global', 'Install globally (uses global config)')
     .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
     .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((depQuery, options) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    const isGlobal = program.opts().global;
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
     const [depName, depConfig] = findMatchingDep(config, depQuery);
     if (options.ref && options.rawRef) {
         throw new Error('Cannot use both -r/--ref and -R/--raw-ref');
@@ -1187,7 +1274,7 @@ program
             console.log(`Would switch ${depName} to: ${specifier}`);
             return;
         }
-        if (options.global) {
+        if (isGlobal) {
             runGlobalInstall(specifier);
             console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`);
             return;
@@ -1206,7 +1293,7 @@ program
             console.log(`Would switch ${depName} to: ${tarballUrl}`);
             return;
         }
-        if (options.global) {
+        if (isGlobal) {
             runGlobalInstall(tarballUrl);
             console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`);
             return;
@@ -1222,11 +1309,11 @@ program
     .command('npm [dep] [version]')
     .alias('n')
     .description('Switch dependency to NPM (defaults to latest)')
-    .option('-g, --global', 'Install globally (uses global config)')
     .option('-n, --dry-run', 'Show what would be installed without making changes')
     .option('-I, --no-install', 'Skip running pnpm install')
     .action((arg1, arg2, options) => {
-    const config = options.global ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    const isGlobal = program.opts().global;
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
     const deps = Object.entries(config.dependencies);
     // If only one arg and exactly one dep configured, treat arg as version
     let depQuery;
@@ -1248,7 +1335,7 @@ program
         console.log(`Would switch ${depName} to: ${specifier}`);
         return;
     }
-    if (options.global) {
+    if (isGlobal) {
         runGlobalInstall(`${npmName}@${resolvedVersion}`);
         console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`);
         return;
@@ -1280,9 +1367,8 @@ program
     .command('status [dep]')
     .alias('s')
     .description('Show current source for dependency (or all if none specified)')
-    .option('-g, --global', 'Show status of global dependencies')
-    .action((depQuery, options) => {
-    if (options.global) {
+    .action((depQuery) => {
+    if (program.opts().global) {
         const config = loadGlobalConfig();
         const deps = depQuery
             ? [findMatchingDep(config, depQuery)]
@@ -1602,9 +1688,63 @@ hooks
         console.log(`  (not managed by pds)`);
     }
 });
-// Default to 'list' command when no arguments provided
-if (process.argv.length <= 2) {
-    process.argv.push('list');
+const SHELL_ALIASES = `# pds shell aliases
+# Add to your shell rc file: eval "$(pds shell-integration)"
+
+alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
+alias pdgi='pds -g init'  # global init
+alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
+alias pdi='pds init'   # init
+alias pdsi='pds init'  # init (alt)
+alias pdl='pds l'      # local
+alias pdgh='pds gh'    # github
+alias pdgl='pds gl'    # gitlab
+alias pdsn='pds n'     # npm
+alias pdsv='pds v'     # versions
+alias pdss='pds s'     # status
+alias pdsc='pds check' # check for local deps
+alias pddi='pds di'    # deinit (stop tracking, keep in package.json)
+alias pdr='pds rm'     # remove (from pds config and package.json)
+alias pdgr='pds -g rm' # global remove
+`;
+program
+    .command('shell-integration')
+    .alias('shell')
+    .description('Output shell aliases for eval (add to .bashrc/.zshrc)')
+    .action(() => {
+    console.log(SHELL_ALIASES);
+});
+// Default to 'list' if deps configured, otherwise show help
+// Also handle `pds -g` as shorthand for `pds -g ls`
+const hasOnlyGlobalFlag = process.argv.length === 3 && (process.argv[2] === '-g' || process.argv[2] === '--global');
+if (process.argv.length <= 2 || hasOnlyGlobalFlag) {
+    // Check if there are any deps configured
+    const isGlobal = hasOnlyGlobalFlag;
+    try {
+        if (isGlobal) {
+            const config = loadGlobalConfig();
+            if (Object.keys(config.dependencies).length > 0) {
+                process.argv.push('list');
+            }
+            else {
+                process.argv.push('--help');
+            }
+        }
+        else {
+            const projectRoot = findProjectRoot();
+            const config = loadConfig(projectRoot);
+            if (Object.keys(config.dependencies).length > 0) {
+                process.argv.push('list');
+            }
+            else {
+                process.argv.push('--help');
+            }
+        }
+    }
+    catch {
+        // Not in a project or error - show help
+        process.argv.push('--help');
+    }
 }
 try {
     program.parse();
