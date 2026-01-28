@@ -172,14 +172,57 @@ function loadWorkspaceYaml(projectRoot: string): WorkspaceConfig | null {
 
 function saveWorkspaceYaml(projectRoot: string, config: WorkspaceConfig | null): void {
   const wsPath = join(projectRoot, 'pnpm-workspace.yaml')
-  if (!config || !config.packages || config.packages.length === 0) {
-    if (existsSync(wsPath)) {
-      execSync(`rm ${wsPath}`)
-    }
-    return
+  let existingContent = ''
+
+  if (existsSync(wsPath)) {
+    existingContent = readFileSync(wsPath, 'utf-8')
   }
-  const content = 'packages:\n' + config.packages.map(p => `  - ${p}`).join('\n') + '\n'
-  writeFileSync(wsPath, content)
+
+  // Remove existing packages section from content
+  const lines = existingContent.split('\n')
+  const filteredLines: string[] = []
+  let inPackages = false
+
+  for (const line of lines) {
+    if (line.match(/^packages:\s*$/)) {
+      inPackages = true
+      continue
+    }
+    if (inPackages) {
+      // Skip package list items (indented with -)
+      if (line.match(/^\s+-/)) {
+        continue
+      }
+      // Non-indented non-empty line ends packages section
+      if (!line.match(/^\s/) && line.trim()) {
+        inPackages = false
+        filteredLines.push(line)
+      }
+      // Skip empty/whitespace lines within packages section
+      continue
+    }
+    filteredLines.push(line)
+  }
+
+  // Build new content
+  let newContent = filteredLines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+
+  // Add packages section if we have packages
+  if (config?.packages && config.packages.length > 0) {
+    const packagesSection = 'packages:\n' + config.packages.map(p => `  - ${p}`).join('\n')
+    if (newContent) {
+      newContent = newContent + '\n\n' + packagesSection + '\n'
+    } else {
+      newContent = packagesSection + '\n'
+    }
+    writeFileSync(wsPath, newContent)
+  } else if (newContent) {
+    // No packages but other content exists - keep the file without packages section
+    writeFileSync(wsPath, newContent + '\n')
+  } else if (existsSync(wsPath)) {
+    // No packages and no other content - remove the file
+    execSync(`rm "${wsPath}"`)
+  }
 }
 
 function findMatchingDep(config: Config, query?: string): [string, DepConfig] {
