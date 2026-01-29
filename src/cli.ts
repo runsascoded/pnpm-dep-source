@@ -307,6 +307,19 @@ function getCurrentSource(pkg: Record<string, unknown>, depName: string): string
   return deps?.[depName] ?? devDeps?.[depName] ?? '(not found)'
 }
 
+function getInstalledVersion(projectRoot: string, depName: string): string | null {
+  const pkgPath = join(projectRoot, 'node_modules', depName, 'package.json')
+  if (!existsSync(pkgPath)) {
+    return null
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    return pkg.version ?? null
+  } catch {
+    return null
+  }
+}
+
 function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): void {
   const vitePath = join(projectRoot, 'vite.config.ts')
   if (!existsSync(vitePath)) {
@@ -1129,8 +1142,10 @@ program
 
     for (const [name, dep] of Object.entries(config.dependencies)) {
       const current = getCurrentSource(pkg, name)
+      const installedVersion = getInstalledVersion(projectRoot, name)
+      const versionSuffix = installedVersion ? ` (${installedVersion})` : ''
       console.log(`${name}:`)
-      console.log(`  Current: ${current}`)
+      console.log(`  Current: ${current}${versionSuffix}`)
       console.log(`  Local: ${dep.localPath}`)
       if (dep.github) console.log(`  GitHub: ${dep.github}`)
       if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
@@ -1189,8 +1204,10 @@ program
 
     for (const [name, dep] of Object.entries(config.dependencies)) {
       const current = getCurrentSource(pkg, name)
+      const installedVersion = getInstalledVersion(projectRoot, name)
+      const versionSuffix = installedVersion ? ` (${installedVersion})` : ''
       console.log(`${name}:`)
-      console.log(`  Current: ${current}`)
+      console.log(`  Current: ${current}${versionSuffix}`)
       console.log(`  Local: ${dep.localPath}`)
       if (dep.github) console.log(`  GitHub: ${dep.github}`)
       if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
