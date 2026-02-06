@@ -910,7 +910,7 @@ program
   .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools')
 
 program
-  .command('init <path-or-url>')
+  .command('init [path-or-url]')
   .description('Initialize a dependency from local path or repo URL and activate it')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
   .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
@@ -920,7 +920,11 @@ program
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .action((pathOrUrl: string, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string }) => {
+  .action((pathOrUrl: string | undefined, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string }, cmd: { help: () => void }) => {
+    if (!pathOrUrl) {
+      cmd.help()
+      return
+    }
     const isGlobal = program.opts().global
     const isUrl = isRepoUrl(pathOrUrl)
     let pkgInfo: PackageInfo
