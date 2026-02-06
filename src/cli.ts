@@ -377,6 +377,7 @@ interface DepDisplayInfo {
   currentSpecifier?: string    // For global mode: the path or version
   sourceType: 'local' | 'github' | 'gitlab' | 'npm' | 'unknown'
   isDev?: boolean              // Whether it's a devDependency
+  isGlobal?: boolean           // Whether it's a global dependency
   version?: string             // Installed version from node_modules
   gitInfo?: { sha: string; dirty: boolean } | null
   config: DepConfig
@@ -420,8 +421,10 @@ function displayDep(info: DepDisplayInfo, verbose: boolean = false): void {
     currentLine += formatVersion(info.version)
   }
 
-  const devSuffix = info.isDev ? ` ${c.yellow}[dev]${c.reset}` : ''
-  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${devSuffix}:`)
+  const tag = info.isGlobal ? ` ${c.yellow}[global]${c.reset}`
+    : info.isDev ? ` ${c.yellow}[dev]${c.reset}`
+    : ''
+  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${tag}:`)
   console.log(`  Current: ${currentLine}`)
   console.log(`  Local: ${info.config.localPath}`)
   if (info.config.github) console.log(`  GitHub: ${info.config.github}`)
@@ -453,6 +456,7 @@ function buildGlobalDepInfo(name: string, dep: DepConfig): DepDisplayInfo {
     currentSource: installSource?.source ?? '(not installed)',
     currentSpecifier: installSource?.specifier,
     sourceType,
+    isGlobal: true,
     gitInfo,
     config: dep,
   }
@@ -752,49 +756,65 @@ function getLatestNpmVersion(packageName: string): string {
   return result.stdout.trim()
 }
 
-function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: string; specifier: string } | null {
-  const result = spawnSync('pnpm', ['list', '-g', packageName, '--json'], {
+// Cache for global install sources (fetched once via pnpm list -g --json)
+let globalInstallCache: Map<string, { source: string; specifier: string }> | null = null
+
+function parseGlobalPkgSource(
+  pkg: { version?: string; resolved?: string },
+  globalDir: string,
+): { source: string; specifier: string } | null {
+  const version = pkg.version || ''
+  const resolved = pkg.resolved || ''
+
+  // Local file install: version is "file:..." path
+  if (version.startsWith('file:')) {
+    const filePath = version.slice(5)
+    const absPath = globalDir ? resolve(globalDir, filePath) : filePath
+    return { source: 'local', specifier: absPath }
+  }
+
+  // Check resolved URL for source detection
+  if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
+    const shaMatch = resolved.match(/([a-f0-9]{40})/)
+    const sha = shaMatch ? shaMatch[1].slice(0, 7) : ''
+    return { source: 'github', specifier: `${sha}; ${version}` }
+  } else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
+    const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//)
+    const ref = refMatch ? refMatch[1].slice(0, 7) : ''
+    return { source: 'gitlab', specifier: `${ref}; ${version}` }
+  } else if (version) {
+    return { source: 'npm', specifier: version }
+  }
+  return null
+}
+
+function fetchAllGlobalInstallSources(): Map<string, { source: string; specifier: string }> {
+  if (globalInstallCache) return globalInstallCache
+
+  globalInstallCache = new Map()
+  const result = spawnSync('pnpm', ['list', '-g', '--json'], {
     encoding: 'utf-8',
   })
-  if (result.status !== 0) {
-    return null
-  }
+  if (result.status !== 0) return globalInstallCache
+
   try {
     const data = JSON.parse(result.stdout)
-    // pnpm list -g --json returns array of global packages
-    const pkg = data[0]?.dependencies?.[packageName]
-    if (!pkg) return null
-
-    const version = pkg.version || ''
-    const resolved = pkg.resolved || ''
-
-    // Local file install: version is "file:..." path
-    if (version.startsWith('file:')) {
-      // Resolve relative path to absolute (relative to pnpm global dir)
-      const filePath = version.slice(5) // remove "file:"
-      const globalDir = data[0]?.path || ''
-      const absPath = globalDir ? resolve(globalDir, filePath) : filePath
-      return { source: 'local', specifier: absPath }
+    const globalDir = data[0]?.path || ''
+    const deps = data[0]?.dependencies ?? {}
+    for (const [name, pkg] of Object.entries(deps)) {
+      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string }, globalDir)
+      if (source) {
+        globalInstallCache.set(name, source)
+      }
     }
-
-    // Check resolved URL for source detection
-    if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
-      // Extract SHA from GitHub URL
-      const shaMatch = resolved.match(/([a-f0-9]{40})/)
-      const sha = shaMatch ? shaMatch[1].slice(0, 7) : ''
-      return { source: 'github', specifier: `${sha}; ${version}` }
-    } else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
-      // Extract ref from GitLab tarball URL
-      const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//)
-      const ref = refMatch ? refMatch[1].slice(0, 7) : ''
-      return { source: 'gitlab', specifier: `${ref}; ${version}` }
-    } else if (version) {
-      return { source: 'npm', specifier: version }
-    }
-    return null
   } catch {
-    return null
+    // Ignore parse errors
   }
+  return globalInstallCache
+}
+
+function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: string; specifier: string } | null {
+  return fetchAllGlobalInstallSources().get(packageName) ?? null
 }
 
 // Helper to switch a dependency to local mode
@@ -1275,14 +1295,22 @@ program
   .command('list')
   .alias('ls')
   .description('List configured dependencies and their current sources')
+  .option('-a, --all', 'Show both project and global dependencies')
   .option('-v, --verbose', 'Show available remote versions')
-  .action((options: { verbose?: boolean }) => {
-    listDeps(options.verbose ?? false)
+  .action((options: { all?: boolean; verbose?: boolean }) => {
+    listDeps(options.verbose ?? false, options.all)
   })
 
 // Helper for list/versions commands
-function listDeps(verbose: boolean): void {
-  if (program.opts().global) {
+function listDeps(verbose: boolean, all?: boolean): void {
+  const isGlobal = program.opts().global
+
+  // Prefetch global install sources (single pnpm list -g call)
+  if (isGlobal || all) {
+    fetchAllGlobalInstallSources()
+  }
+
+  if (isGlobal && !all) {
     const config = loadGlobalConfig()
 
     if (Object.keys(config.dependencies).length === 0) {
@@ -1296,17 +1324,28 @@ function listDeps(verbose: boolean): void {
     return
   }
 
-  const projectRoot = findProjectRoot()
-  const config = loadConfig(projectRoot)
-  const pkg = loadPackageJson(projectRoot)
+  // Show project deps (unless -g without -a)
+  if (!isGlobal) {
+    const projectRoot = findProjectRoot()
+    const config = loadConfig(projectRoot)
+    const pkg = loadPackageJson(projectRoot)
 
-  if (Object.keys(config.dependencies).length === 0) {
-    console.log('No dependencies configured. Use "pds init <path>" to add one.')
-    return
+    if (Object.keys(config.dependencies).length === 0 && !all) {
+      console.log('No dependencies configured. Use "pds init <path>" to add one.')
+      return
+    }
+
+    for (const [name, dep] of Object.entries(config.dependencies)) {
+      displayDep(buildProjectDepInfo(name, dep, projectRoot, pkg), verbose)
+    }
   }
 
-  for (const [name, dep] of Object.entries(config.dependencies)) {
-    displayDep(buildProjectDepInfo(name, dep, projectRoot, pkg), verbose)
+  // Show global deps if -a
+  if (all) {
+    const globalConfig = loadGlobalConfig()
+    for (const [name, dep] of Object.entries(globalConfig.dependencies)) {
+      displayDep(buildGlobalDepInfo(name, dep), verbose)
+    }
   }
 }
 
@@ -2050,7 +2089,9 @@ alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
 alias pdi='pds init'   # init
 alias pdid='pds init -D'  # init as devDependency
 alias pdsi='pds init'  # init (alt)
-alias pdl='pds l'      # local
+alias pdl='pds ls'     # list
+alias pdla='pds ls -a' # list all (project + global)
+alias pdsl='pds l'     # local
 alias pdgh='pds gh'    # github
 alias pdgl='pds gl'    # gitlab
 alias pdsn='pds n'     # npm
