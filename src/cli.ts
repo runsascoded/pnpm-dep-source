@@ -376,6 +376,7 @@ interface DepDisplayInfo {
   currentSource: string        // e.g. "workspace:*", "github:user/repo#sha", or "local"
   currentSpecifier?: string    // For global mode: the path or version
   sourceType: 'local' | 'github' | 'gitlab' | 'npm' | 'unknown'
+  isDev?: boolean              // Whether it's a devDependency
   version?: string             // Installed version from node_modules
   gitInfo?: { sha: string; dirty: boolean } | null
   config: DepConfig
@@ -419,7 +420,8 @@ function displayDep(info: DepDisplayInfo, verbose: boolean = false): void {
     currentLine += formatVersion(info.version)
   }
 
-  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}:`)
+  const devSuffix = info.isDev ? ` ${c.yellow}[dev]${c.reset}` : ''
+  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${devSuffix}:`)
   console.log(`  Current: ${currentLine}`)
   console.log(`  Local: ${info.config.localPath}`)
   if (info.config.github) console.log(`  GitHub: ${info.config.github}`)
@@ -464,6 +466,8 @@ function buildProjectDepInfo(
 ): DepDisplayInfo {
   const currentSource = getCurrentSource(pkg, name)
   const sourceType = getSourceType(currentSource)
+  const devDeps = pkg.devDependencies as Record<string, string> | undefined
+  const isDev = !!(devDeps && name in devDeps)
 
   let version: string | undefined
   let gitInfo: { sha: string; dirty: boolean } | null = null
@@ -478,6 +482,7 @@ function buildProjectDepInfo(
     name,
     currentSource,
     sourceType,
+    isDev,
     version,
     gitInfo,
     config: dep,
@@ -2039,6 +2044,7 @@ alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
 alias pdgi='pds -g init'  # global init
 alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
 alias pdi='pds init'   # init
+alias pdid='pds init -D'  # init as devDependency
 alias pdsi='pds init'  # init (alt)
 alias pdl='pds l'      # local
 alias pdgh='pds gh'    # github
