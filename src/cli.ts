@@ -320,6 +320,170 @@ function getInstalledVersion(projectRoot: string, depName: string): string | nul
   }
 }
 
+function getLocalGitInfo(localPath: string): { sha: string; dirty: boolean } | null {
+  if (!existsSync(localPath)) {
+    return null
+  }
+  try {
+    // Get short SHA
+    const shaResult = spawnSync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], {
+      encoding: 'utf-8',
+    })
+    if (shaResult.status !== 0) {
+      return null
+    }
+    const sha = shaResult.stdout.trim()
+
+    // Check if dirty
+    const statusResult = spawnSync('git', ['-C', localPath, 'status', '--porcelain'], {
+      encoding: 'utf-8',
+    })
+    const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0
+
+    return { sha, dirty }
+  } catch {
+    return null
+  }
+}
+
+// ANSI color codes (only used when stdout is TTY)
+const isTTY = process.stdout.isTTY
+const c = {
+  reset: isTTY ? '\x1b[0m' : '',
+  bold: isTTY ? '\x1b[1m' : '',
+  dim: isTTY ? '\x1b[2m' : '',
+  cyan: isTTY ? '\x1b[36m' : '',
+  green: isTTY ? '\x1b[32m' : '',
+  yellow: isTTY ? '\x1b[33m' : '',
+  red: isTTY ? '\x1b[31m' : '',
+  magenta: isTTY ? '\x1b[35m' : '',
+}
+
+function formatGitInfo(info: { sha: string; dirty: boolean } | null): string {
+  if (!info) return ''
+  const dirtyStr = info.dirty ? ` ${c.red}dirty${c.reset}` : ''
+  return ` ${c.dim}(${info.sha}${dirtyStr}${c.dim})${c.reset}`
+}
+
+function formatVersion(version: string | null): string {
+  if (!version) return ''
+  return ` ${c.dim}(${version})${c.reset}`
+}
+
+// Unified display info for a dependency
+interface DepDisplayInfo {
+  name: string
+  currentSource: string        // e.g. "workspace:*", "github:user/repo#sha", or "local"
+  currentSpecifier?: string    // For global mode: the path or version
+  sourceType: 'local' | 'github' | 'gitlab' | 'npm' | 'unknown'
+  version?: string             // Installed version from node_modules
+  gitInfo?: { sha: string; dirty: boolean } | null
+  config: DepConfig
+}
+
+function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'npm' | 'unknown' {
+  if (source === 'workspace:*' || source === 'local') return 'local'
+  if (source.startsWith('github:')) return 'github'
+  if (source.includes('gitlab.com') && source.includes('/-/archive/')) return 'gitlab'
+  if (source.match(/^\^?\d|^latest/)) return 'npm'
+  return 'unknown'
+}
+
+function getSourceColor(sourceType: string): string {
+  switch (sourceType) {
+    case 'local': return c.green
+    case 'github': return c.yellow
+    case 'gitlab': return c.magenta
+    case 'npm': return c.cyan
+    default: return c.reset
+  }
+}
+
+function displayDep(info: DepDisplayInfo, verbose: boolean = false): void {
+  const sourceColor = getSourceColor(info.sourceType)
+
+  // Build current line
+  let currentLine: string
+  if (info.currentSpecifier !== undefined) {
+    // Global mode: "local (/path)" or "github (sha; version)"
+    currentLine = `${sourceColor}${info.currentSource}${c.reset} ${c.dim}(${info.currentSpecifier})${c.reset}`
+  } else {
+    // Project mode: "workspace:*" or "github:user/repo#sha"
+    currentLine = `${sourceColor}${info.currentSource}${c.reset}`
+  }
+
+  // Add version or git info suffix
+  if (info.sourceType === 'local' && info.gitInfo) {
+    currentLine += formatGitInfo(info.gitInfo)
+  } else if (info.version) {
+    currentLine += formatVersion(info.version)
+  }
+
+  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}:`)
+  console.log(`  Current: ${currentLine}`)
+  console.log(`  Local: ${info.config.localPath}`)
+  if (info.config.github) console.log(`  GitHub: ${info.config.github}`)
+  if (info.config.gitlab) console.log(`  GitLab: ${info.config.gitlab}`)
+  if (info.config.npm) console.log(`  NPM: ${info.config.npm}`)
+
+  if (verbose) {
+    const versions = fetchRemoteVersions(info.config, info.name)
+    if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
+    if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
+    if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
+  }
+}
+
+function buildGlobalDepInfo(name: string, dep: DepConfig): DepDisplayInfo {
+  const installSource = getGlobalInstallSource(name)
+  let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
+  let gitInfo: { sha: string; dirty: boolean } | null = null
+
+  if (installSource) {
+    sourceType = getSourceType(installSource.source)
+    if (sourceType === 'local' && dep.localPath) {
+      gitInfo = getLocalGitInfo(dep.localPath)
+    }
+  }
+
+  return {
+    name,
+    currentSource: installSource?.source ?? '(not installed)',
+    currentSpecifier: installSource?.specifier,
+    sourceType,
+    gitInfo,
+    config: dep,
+  }
+}
+
+function buildProjectDepInfo(
+  name: string,
+  dep: DepConfig,
+  projectRoot: string,
+  pkg: Record<string, unknown>,
+): DepDisplayInfo {
+  const currentSource = getCurrentSource(pkg, name)
+  const sourceType = getSourceType(currentSource)
+
+  let version: string | undefined
+  let gitInfo: { sha: string; dirty: boolean } | null = null
+
+  if (sourceType === 'local' && dep.localPath) {
+    gitInfo = getLocalGitInfo(resolve(projectRoot, dep.localPath))
+  } else {
+    version = getInstalledVersion(projectRoot, name) ?? undefined
+  }
+
+  return {
+    name,
+    currentSource,
+    sourceType,
+    version,
+    gitInfo,
+    config: dep,
+  }
+}
+
 function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): void {
   const vitePath = join(projectRoot, 'vite.config.ts')
   if (!existsSync(vitePath)) {
@@ -1104,120 +1268,45 @@ program
   .description('List configured dependencies and their current sources')
   .option('-v, --verbose', 'Show available remote versions')
   .action((options: { verbose?: boolean }) => {
-    if (program.opts().global) {
-      const config = loadGlobalConfig()
+    listDeps(options.verbose ?? false)
+  })
 
-      if (Object.keys(config.dependencies).length === 0) {
-        console.log('No global dependencies configured. Use "pds init -G <path>" to add one.')
-        return
-      }
-
-      for (const [name, dep] of Object.entries(config.dependencies)) {
-        const installSource = getGlobalInstallSource(name)
-        console.log(`${name}:`)
-        console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`)
-        console.log(`  Local: ${dep.localPath}`)
-        if (dep.github) console.log(`  GitHub: ${dep.github}`)
-        if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
-        if (dep.npm) console.log(`  NPM: ${dep.npm}`)
-
-        if (options.verbose) {
-          const versions = fetchRemoteVersions(dep, name)
-          if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
-          if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
-          if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
-        }
-      }
-      return
-    }
-
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
-    const pkg = loadPackageJson(projectRoot)
+// Helper for list/versions commands
+function listDeps(verbose: boolean): void {
+  if (program.opts().global) {
+    const config = loadGlobalConfig()
 
     if (Object.keys(config.dependencies).length === 0) {
-      console.log('No dependencies configured. Use "pnpm-dep-source init <path>" to add one.')
+      console.log('No global dependencies configured. Use "pds -g init <path>" to add one.')
       return
     }
 
     for (const [name, dep] of Object.entries(config.dependencies)) {
-      const current = getCurrentSource(pkg, name)
-      const installedVersion = getInstalledVersion(projectRoot, name)
-      const versionSuffix = installedVersion ? ` (${installedVersion})` : ''
-      console.log(`${name}:`)
-      console.log(`  Current: ${current}${versionSuffix}`)
-      console.log(`  Local: ${dep.localPath}`)
-      if (dep.github) console.log(`  GitHub: ${dep.github}`)
-      if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
-      if (dep.npm) console.log(`  NPM: ${dep.npm}`)
-
-      if (options.verbose) {
-        const versions = fetchRemoteVersions(dep, name)
-        if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
-        if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
-        if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
-      }
+      displayDep(buildGlobalDepInfo(name, dep), verbose)
     }
-  })
+    return
+  }
+
+  const projectRoot = findProjectRoot()
+  const config = loadConfig(projectRoot)
+  const pkg = loadPackageJson(projectRoot)
+
+  if (Object.keys(config.dependencies).length === 0) {
+    console.log('No dependencies configured. Use "pds init <path>" to add one.')
+    return
+  }
+
+  for (const [name, dep] of Object.entries(config.dependencies)) {
+    displayDep(buildProjectDepInfo(name, dep, projectRoot, pkg), verbose)
+  }
+}
 
 program
   .command('versions')
   .alias('v')
   .description('List dependencies with available remote versions (alias for ls -v)')
   .action(() => {
-    // Re-use the list command logic with verbose=true
-    const isGlobal = program.opts().global
-
-    if (isGlobal) {
-      const config = loadGlobalConfig()
-
-      if (Object.keys(config.dependencies).length === 0) {
-        console.log('No global dependencies configured. Use "pds init -G <path>" to add one.')
-        return
-      }
-
-      for (const [name, dep] of Object.entries(config.dependencies)) {
-        const installSource = getGlobalInstallSource(name)
-        console.log(`${name}:`)
-        console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`)
-        console.log(`  Local: ${dep.localPath}`)
-        if (dep.github) console.log(`  GitHub: ${dep.github}`)
-        if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
-        if (dep.npm) console.log(`  NPM: ${dep.npm}`)
-
-        const versions = fetchRemoteVersions(dep, name)
-        if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
-        if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
-        if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
-      }
-      return
-    }
-
-    const projectRoot = findProjectRoot()
-    const config = loadConfig(projectRoot)
-    const pkg = loadPackageJson(projectRoot)
-
-    if (Object.keys(config.dependencies).length === 0) {
-      console.log('No dependencies configured. Use "pnpm-dep-source init <path>" to add one.')
-      return
-    }
-
-    for (const [name, dep] of Object.entries(config.dependencies)) {
-      const current = getCurrentSource(pkg, name)
-      const installedVersion = getInstalledVersion(projectRoot, name)
-      const versionSuffix = installedVersion ? ` (${installedVersion})` : ''
-      console.log(`${name}:`)
-      console.log(`  Current: ${current}${versionSuffix}`)
-      console.log(`  Local: ${dep.localPath}`)
-      if (dep.github) console.log(`  GitHub: ${dep.github}`)
-      if (dep.gitlab) console.log(`  GitLab: ${dep.gitlab}`)
-      if (dep.npm) console.log(`  NPM: ${dep.npm}`)
-
-      const versions = fetchRemoteVersions(dep, name)
-      if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
-      if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
-      if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
-    }
+    listDeps(true)
   })
 
 program
