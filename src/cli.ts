@@ -351,10 +351,10 @@ const isTTY = process.stdout.isTTY
 const c = {
   reset: isTTY ? '\x1b[0m' : '',
   bold: isTTY ? '\x1b[1m' : '',
-  dim: isTTY ? '\x1b[2m' : '',
   cyan: isTTY ? '\x1b[36m' : '',
   green: isTTY ? '\x1b[32m' : '',
   yellow: isTTY ? '\x1b[33m' : '',
+  blue: isTTY ? '\x1b[34m' : '',
   red: isTTY ? '\x1b[31m' : '',
   magenta: isTTY ? '\x1b[35m' : '',
 }
@@ -362,12 +362,12 @@ const c = {
 function formatGitInfo(info: { sha: string; dirty: boolean } | null): string {
   if (!info) return ''
   const dirtyStr = info.dirty ? ` ${c.red}dirty${c.reset}` : ''
-  return ` ${c.dim}(${info.sha}${dirtyStr}${c.dim})${c.reset}`
+  return ` ${c.blue}(${info.sha}${dirtyStr}${c.blue})${c.reset}`
 }
 
 function formatVersion(version: string | null): string {
   if (!version) return ''
-  return ` ${c.dim}(${version})${c.reset}`
+  return ` ${c.blue}(${version})${c.reset}`
 }
 
 // Unified display info for a dependency
@@ -408,7 +408,7 @@ function displayDep(info: DepDisplayInfo, verbose: boolean = false): void {
   let currentLine: string
   if (info.currentSpecifier !== undefined) {
     // Global mode: "local (/path)" or "github (sha; version)"
-    currentLine = `${sourceColor}${info.currentSource}${c.reset} ${c.dim}(${info.currentSpecifier})${c.reset}`
+    currentLine = `${sourceColor}${info.currentSource}${c.reset} ${c.blue}(${info.currentSpecifier})${c.reset}`
   } else {
     // Project mode: "workspace:*" or "github:user/repo#sha"
     currentLine = `${sourceColor}${info.currentSource}${c.reset}`
