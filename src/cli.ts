@@ -886,7 +886,11 @@ function getLocalPackageName(localPath: string): string {
 
 function runPnpmInstall(projectRoot: string): void {
   console.log('Running pnpm install...')
-  execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' })
+  try {
+    execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' })
+  } catch {
+    console.error(`${c.yellow}Warning: pnpm install failed (config changes were saved)${c.reset}`)
+  }
 }
 
 function runGlobalInstall(specifier: string): void {
