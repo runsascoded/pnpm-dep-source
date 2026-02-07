@@ -4,6 +4,7 @@ import { program } from 'commander'
 import { execSync, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
+import { parseModule } from 'magicast'
 import { basename, dirname, join, relative, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -496,58 +497,41 @@ function buildProjectDepInfo(
 function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): void {
   const vitePath = join(projectRoot, 'vite.config.ts')
   if (!existsSync(vitePath)) {
-    return // No vite config, nothing to do
+    return
   }
 
-  let content = readFileSync(vitePath, 'utf-8')
+  const content = readFileSync(vitePath, 'utf-8')
+  let mod
+  try {
+    mod = parseModule(content)
+  } catch {
+    return
+  }
+
+  // Handle both `export default defineConfig({...})` and `export default {...}`
+  const raw = mod.exports.default
+  const config = raw?.$args ? raw.$args[0] : raw
+  if (!config) return
 
   if (exclude) {
-    // Add to optimizeDeps.exclude if not present
-    if (content.includes('optimizeDeps:')) {
-      if (!content.includes(`'${depName}'`) && !content.includes(`"${depName}"`)) {
-        // Add to existing exclude array
-        content = content.replace(
-          /exclude:\s*\[([^\]]*)\]/,
-          (_, inner) => {
-            const items = inner.trim() ? inner.trim() + `, '${depName}'` : `'${depName}'`
-            return `exclude: [${items}]`
-          }
-        )
-        if (!content.includes(`'${depName}'`)) {
-          // No exclude array, add one
-          content = content.replace(
-            /optimizeDeps:\s*\{([^}]*)\}/,
-            (_, inner) => `optimizeDeps: {${inner.trimEnd()}\n    exclude: ['${depName}'],\n  }`
-          )
-        }
-      }
-    } else {
-      // Add optimizeDeps section before closing })
-      content = content.replace(
-        /}\)\s*$/,
-        `  optimizeDeps: {\n    exclude: ['${depName}'],\n  },\n})\n`
-      )
+    if (!config.optimizeDeps) config.optimizeDeps = {}
+    if (!config.optimizeDeps.exclude) config.optimizeDeps.exclude = []
+    if (!config.optimizeDeps.exclude.includes(depName)) {
+      config.optimizeDeps.exclude.push(depName)
     }
   } else {
-    // Remove from optimizeDeps.exclude array only
-    const escaped = depName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    content = content.replace(
-      /exclude:\s*\[([^\]]*)\]/,
-      (match, inner: string) => {
-        const cleaned = inner.replace(
-          new RegExp(`\\s*['"]${escaped}['"],?`, 'g'),
-          ''
-        )
-        return `exclude: [${cleaned.trim()}]`
+    if (config.optimizeDeps?.exclude) {
+      config.optimizeDeps.exclude = config.optimizeDeps.exclude.filter((x: string) => x !== depName)
+      if (config.optimizeDeps.exclude.length === 0) {
+        delete config.optimizeDeps.exclude
       }
-    )
-    // Clean up empty exclude arrays
-    content = content.replace(/\s*exclude:\s*\[\s*\],?/g, '')
-    // Clean up empty optimizeDeps (including leading whitespace)
-    content = content.replace(/\s*optimizeDeps:\s*\{\s*\},?/g, '')
+    }
+    if (config.optimizeDeps && Object.keys(config.optimizeDeps).length === 0) {
+      delete config.optimizeDeps
+    }
   }
 
-  writeFileSync(vitePath, content)
+  writeFileSync(vitePath, mod.generate().code)
 }
 
 function resolveGitHubRef(repo: string, ref: string): string {
