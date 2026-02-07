@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { program } from 'commander'
-import { execSync, spawnSync } from 'child_process'
+import { execSync, spawn, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { parseModule } from 'magicast'
@@ -31,6 +31,25 @@ const VERSION = pkgJson.version as string
 const CONFIG_FILE = '.pnpm-dep-source.json'
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source')
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json')
+
+function spawnAsync(
+  cmd: string,
+  args: string[],
+  opts: { encoding: 'utf-8' },
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    const stdout: string[] = []
+    const stderr: string[] = []
+    child.stdout.setEncoding(opts.encoding)
+    child.stderr.setEncoding(opts.encoding)
+    child.stdout.on('data', (d: string) => stdout.push(d))
+    child.stderr.on('data', (d: string) => stderr.push(d))
+    child.on('close', (status) => {
+      resolve({ status, stdout: stdout.join(''), stderr: stderr.join('') })
+    })
+  })
+}
 
 interface DepConfig {
   localPath?: string    // optional when initialized from URL
@@ -347,6 +366,26 @@ function getLocalGitInfo(localPath: string): { sha: string; dirty: boolean } | n
   }
 }
 
+async function getLocalGitInfoAsync(localPath: string): Promise<{ sha: string; dirty: boolean } | null> {
+  if (!existsSync(localPath)) {
+    return null
+  }
+  try {
+    const [shaResult, statusResult] = await Promise.all([
+      spawnAsync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf-8' }),
+      spawnAsync('git', ['-C', localPath, 'status', '--porcelain'], { encoding: 'utf-8' }),
+    ])
+    if (shaResult.status !== 0) {
+      return null
+    }
+    const sha = shaResult.stdout.trim()
+    const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0
+    return { sha, dirty }
+  } catch {
+    return null
+  }
+}
+
 // ANSI color codes (only used when stdout is TTY)
 const isTTY = process.stdout.isTTY
 const c = {
@@ -364,11 +403,6 @@ function formatGitInfo(info: { sha: string; dirty: boolean } | null): string {
   if (!info) return ''
   const dirtyStr = info.dirty ? ` ${c.red}dirty${c.reset}` : ''
   return ` ${c.blue}(${info.sha}${dirtyStr}${c.blue})${c.reset}`
-}
-
-function formatVersion(version: string | null): string {
-  if (!version) return ''
-  return ` ${c.blue}(${version})${c.reset}`
 }
 
 // Unified display info for a dependency
@@ -392,51 +426,71 @@ function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'npm' | 
   return 'unknown'
 }
 
-function getSourceColor(sourceType: string): string {
-  switch (sourceType) {
-    case 'local': return c.green
-    case 'github': return c.yellow
-    case 'gitlab': return c.magenta
-    case 'npm': return c.cyan
-    default: return c.reset
+type RemoteVersions = { npm?: string; github?: string; gitlab?: string }
+
+// Build blue-colored parenthesized suffix showing current ref/version for the active line
+function formatActiveSuffix(info: DepDisplayInfo): string {
+  if (info.sourceType === 'local') return ''
+
+  const parts: string[] = []
+
+  if (info.isGlobal && info.currentSpecifier) {
+    parts.push(info.currentSpecifier)
+  } else {
+    if (info.sourceType === 'github') {
+      const match = info.currentSource.match(/#([a-f0-9]+)$/)
+      if (match) parts.push(match[1].slice(0, 7))
+    } else if (info.sourceType === 'gitlab') {
+      const match = info.currentSource.match(/\/-\/archive\/([^/]+)\//)
+      if (match) parts.push(match[1].slice(0, 7))
+    }
+    if (info.version) parts.push(info.version)
   }
+
+  if (parts.length === 0) return ''
+  return ` ${c.blue}(${parts.join('; ')})${c.reset}`
 }
 
-function displayDep(info: DepDisplayInfo, verbose: boolean = false): void {
-  const sourceColor = getSourceColor(info.sourceType)
-
-  // Build current line
-  let currentLine: string
-  if (info.currentSpecifier !== undefined) {
-    // Global mode: "local (/path)" or "github (sha; version)"
-    currentLine = `${sourceColor}${info.currentSource}${c.reset} ${c.blue}(${info.currentSpecifier})${c.reset}`
-  } else {
-    // Project mode: "workspace:*" or "github:user/repo#sha"
-    currentLine = `${sourceColor}${info.currentSource}${c.reset}`
-  }
-
-  // Add version or git info suffix
-  if (info.sourceType === 'local' && info.gitInfo) {
-    currentLine += formatGitInfo(info.gitInfo)
-  } else if (info.version) {
-    currentLine += formatVersion(info.version)
-  }
-
+function displayDep(
+  info: DepDisplayInfo,
+  verbose: boolean = false,
+  remoteVersions?: RemoteVersions,
+): void {
   const tag = info.isGlobal ? ` ${c.yellow}[global]${c.reset}`
     : info.isDev ? ` ${c.yellow}[dev]${c.reset}`
     : ''
   console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${tag}:`)
-  console.log(`  Current: ${currentLine}`)
-  console.log(`  Local: ${info.config.localPath}`)
-  if (info.config.github) console.log(`  GitHub: ${info.config.github}`)
-  if (info.config.gitlab) console.log(`  GitLab: ${info.config.gitlab}`)
-  if (info.config.npm) console.log(`  NPM: ${info.config.npm}`)
 
-  if (verbose) {
-    const versions = fetchRemoteVersions(info.config, info.name)
-    if (versions.npm) console.log(`  NPM latest: ${versions.npm}`)
-    if (versions.github) console.log(`  GitHub dist: ${versions.github}`)
-    if (versions.gitlab) console.log(`  GitLab dist: ${versions.gitlab}`)
+  const active = info.sourceType
+  const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined
+
+  function line(label: string, isActive: boolean, value: string, suffix: string = ''): void {
+    const prefix = !isTTY && isActive ? '> ' : '  '
+    const coloredLabel = isActive ? `${c.green}${label}${c.reset}` : label
+    console.log(`${prefix}${coloredLabel}: ${value}${suffix}`)
+  }
+
+  if (info.config.localPath) {
+    const gitSuffix = info.gitInfo ? formatGitInfo(info.gitInfo) : ''
+    line('Local', active === 'local', info.config.localPath, gitSuffix)
+  }
+  if (info.config.github) {
+    const isActive = active === 'github'
+    const activeSuffix = isActive ? formatActiveSuffix(info) : ''
+    const distSuffix = versions?.github ? ` ${c.blue}(dist: ${versions.github})${c.reset}` : ''
+    line('GitHub', isActive, info.config.github, activeSuffix + distSuffix)
+  }
+  if (info.config.gitlab) {
+    const isActive = active === 'gitlab'
+    const activeSuffix = isActive ? formatActiveSuffix(info) : ''
+    const distSuffix = versions?.gitlab ? ` ${c.blue}(dist: ${versions.gitlab})${c.reset}` : ''
+    line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix)
+  }
+  if (info.config.npm) {
+    const isActive = active === 'npm'
+    const activeSuffix = isActive ? formatActiveSuffix(info) : ''
+    const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm})${c.reset}` : ''
+    line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix)
   }
 }
 
@@ -491,6 +545,84 @@ function buildProjectDepInfo(
     version,
     gitInfo,
     config: dep,
+  }
+}
+
+async function buildGlobalDepInfoAsync(
+  name: string,
+  dep: DepConfig,
+  globalSources: Map<string, { source: string; specifier: string }>,
+): Promise<DepDisplayInfo> {
+  const installSource = globalSources.get(name) ?? null
+  let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
+  let gitInfo: { sha: string; dirty: boolean } | null = null
+
+  if (installSource) {
+    sourceType = getSourceType(installSource.source)
+    if (sourceType === 'local' && dep.localPath) {
+      gitInfo = await getLocalGitInfoAsync(dep.localPath)
+    }
+  }
+
+  return {
+    name,
+    currentSource: installSource?.source ?? '(not installed)',
+    currentSpecifier: installSource?.specifier,
+    sourceType,
+    isGlobal: true,
+    gitInfo,
+    config: dep,
+  }
+}
+
+async function buildProjectDepInfoAsync(
+  name: string,
+  dep: DepConfig,
+  projectRoot: string,
+  pkg: Record<string, unknown>,
+): Promise<DepDisplayInfo> {
+  const currentSource = getCurrentSource(pkg, name)
+  const sourceType = getSourceType(currentSource)
+  const devDeps = pkg.devDependencies as Record<string, string> | undefined
+  const isDev = !!(devDeps && name in devDeps)
+
+  let version: string | undefined
+  let gitInfo: { sha: string; dirty: boolean } | null = null
+
+  if (sourceType === 'local' && dep.localPath) {
+    gitInfo = await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath))
+  } else {
+    version = getInstalledVersion(projectRoot, name) ?? undefined
+  }
+
+  return {
+    name,
+    currentSource,
+    sourceType,
+    isDev,
+    version,
+    gitInfo,
+    config: dep,
+  }
+}
+
+async function fetchRemoteVersionsAsync(
+  dep: DepConfig,
+  depName: string,
+): Promise<RemoteVersions> {
+  const distBranch = dep.distBranch ?? 'dist'
+  const npmName = dep.npm ?? depName
+
+  const [npmVersion, ghSha, glSha] = await Promise.all([
+    getLatestNpmVersionAsync(npmName).catch(() => undefined),
+    dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
+    dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+  ])
+
+  return {
+    npm: npmVersion,
+    github: ghSha ? ghSha.slice(0, 7) : undefined,
+    gitlab: glSha ? glSha.slice(0, 7) : undefined,
   }
 }
 
@@ -549,12 +681,34 @@ function resolveGitHubRef(repo: string, ref: string): string {
   return result.stdout.trim()
 }
 
+async function resolveGitHubRefAsync(repo: string, ref: string): Promise<string> {
+  const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' })
+  if (result.status !== 0) {
+    throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`)
+  }
+  return result.stdout.trim()
+}
+
 function resolveGitLabRef(repo: string, ref: string): string {
   // Use glab api to resolve ref to SHA from GitLab
   const encodedRepo = encodeURIComponent(repo)
   const result = spawnSync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], {
     encoding: 'utf-8',
   })
+  if (result.status !== 0) {
+    throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`)
+  }
+  try {
+    const data = JSON.parse(result.stdout)
+    return data.id
+  } catch {
+    throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`)
+  }
+}
+
+async function resolveGitLabRefAsync(repo: string, ref: string): Promise<string> {
+  const encodedRepo = encodeURIComponent(repo)
+  const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' })
   if (result.status !== 0) {
     throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`)
   }
@@ -750,6 +904,14 @@ function getLatestNpmVersion(packageName: string): string {
   return result.stdout.trim()
 }
 
+async function getLatestNpmVersionAsync(packageName: string): Promise<string> {
+  const result = await spawnAsync('npm', ['view', packageName, 'version'], { encoding: 'utf-8' })
+  if (result.status !== 0) {
+    throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`)
+  }
+  return result.stdout.trim()
+}
+
 // Cache for global install sources (fetched once via pnpm list -g --json)
 let globalInstallCache: Map<string, { source: string; specifier: string }> | null = null
 
@@ -805,6 +967,26 @@ function fetchAllGlobalInstallSources(): Map<string, { source: string; specifier
     // Ignore parse errors
   }
   return globalInstallCache
+}
+
+async function fetchAllGlobalInstallSourcesAsync(): Promise<Map<string, { source: string; specifier: string }>> {
+  const map = new Map<string, { source: string; specifier: string }>()
+  const result = await spawnAsync('pnpm', ['list', '-g', '--json'], { encoding: 'utf-8' })
+  if (result.status !== 0) return map
+  try {
+    const data = JSON.parse(result.stdout)
+    const globalDir = data[0]?.path || ''
+    const deps = data[0]?.dependencies ?? {}
+    for (const [name, pkg] of Object.entries(deps)) {
+      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string }, globalDir)
+      if (source) {
+        map.set(name, source)
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return map
 }
 
 function getGlobalInstallSource(packageName = 'pnpm-dep-source'): { source: string; specifier: string } | null {
@@ -1291,18 +1473,18 @@ program
   .description('List configured dependencies and their current sources')
   .option('-a, --all', 'Show both project and global dependencies')
   .option('-v, --verbose', 'Show available remote versions')
-  .action((options: { all?: boolean; verbose?: boolean }) => {
-    listDeps(options.verbose ?? false, options.all)
+  .action(async (options: { all?: boolean; verbose?: boolean }) => {
+    await listDepsAsync(options.verbose ?? false, options.all)
   })
 
 // Helper for list/versions commands
-function listDeps(verbose: boolean, all?: boolean): void {
+async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
   const isGlobal = program.opts().global
 
-  // Prefetch global install sources (single pnpm list -g call)
-  if (isGlobal || all) {
-    fetchAllGlobalInstallSources()
-  }
+  // Kick off global sources fetch early (if needed)
+  const globalSourcesPromise = (isGlobal || all)
+    ? fetchAllGlobalInstallSourcesAsync()
+    : undefined
 
   if (isGlobal && !all) {
     const config = loadGlobalConfig()
@@ -1312,34 +1494,68 @@ function listDeps(verbose: boolean, all?: boolean): void {
       return
     }
 
-    for (const [name, dep] of Object.entries(config.dependencies)) {
-      displayDep(buildGlobalDepInfo(name, dep), verbose)
+    const entries = Object.entries(config.dependencies)
+    // Launch dep info builds and remote version fetches all concurrently
+    const [infos, remoteVersions] = await Promise.all([
+      globalSourcesPromise!.then(sources =>
+        Promise.all(entries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))
+      ),
+      verbose
+        ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+        : Promise.resolve([] as RemoteVersions[]),
+    ])
+
+    for (let i = 0; i < infos.length; i++) {
+      displayDep(infos[i], verbose, remoteVersions[i])
     }
     return
   }
 
-  // Show project deps (unless -g without -a)
+  // Gather entries from project and global configs
+  let projectRoot: string | undefined
+  let projectEntries: [string, DepConfig][] = []
+  let pkg: Record<string, unknown> | undefined
   if (!isGlobal) {
-    const projectRoot = findProjectRoot()
+    projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
-    const pkg = loadPackageJson(projectRoot)
+    pkg = loadPackageJson(projectRoot)
 
     if (Object.keys(config.dependencies).length === 0 && !all) {
       console.log('No dependencies configured. Use "pds init <path>" to add one.')
       return
     }
 
-    for (const [name, dep] of Object.entries(config.dependencies)) {
-      displayDep(buildProjectDepInfo(name, dep, projectRoot, pkg), verbose)
-    }
+    projectEntries = Object.entries(config.dependencies)
   }
 
-  // Show global deps if -a
+  let globalEntries: [string, DepConfig][] = []
   if (all) {
     const globalConfig = loadGlobalConfig()
-    for (const [name, dep] of Object.entries(globalConfig.dependencies)) {
-      displayDep(buildGlobalDepInfo(name, dep), verbose)
-    }
+    globalEntries = Object.entries(globalConfig.dependencies)
+  }
+
+  // Launch everything concurrently: dep info builds, global sources, and remote version fetches
+  const [projectInfos, globalInfos, projectVersions, globalVersions] = await Promise.all([
+    Promise.all(projectEntries.map(([name, dep]) => buildProjectDepInfoAsync(name, dep, projectRoot!, pkg!))),
+    globalSourcesPromise
+      ? globalSourcesPromise.then(sources =>
+          Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))
+        )
+      : Promise.resolve([] as DepDisplayInfo[]),
+    verbose
+      ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+      : Promise.resolve([] as RemoteVersions[]),
+    verbose
+      ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+      : Promise.resolve([] as RemoteVersions[]),
+  ])
+
+  // Print in order after all data collected
+  for (let i = 0; i < projectInfos.length; i++) {
+    displayDep(projectInfos[i], verbose, projectVersions[i])
+  }
+  for (let i = 0; i < globalInfos.length; i++) {
+    displayDep(globalInfos[i], verbose, globalVersions[i])
   }
 }
 
@@ -1347,8 +1563,8 @@ program
   .command('versions')
   .alias('v')
   .description('List dependencies with available remote versions (alias for ls -v)')
-  .action(() => {
-    listDeps(true)
+  .action(async () => {
+    await listDepsAsync(true)
   })
 
 program
@@ -1443,7 +1659,7 @@ program
 
     if (isGlobal) {
       runGlobalInstall(specifier)
-      console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`)
+      console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
       return
     }
 
@@ -1606,7 +1822,7 @@ program
 
       if (isGlobal) {
         runGlobalInstall(specifier)
-        console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`)
+        console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
         return
       }
 
@@ -2139,7 +2355,7 @@ if (process.argv.length <= 2 || hasOnlyGlobalFlag) {
 }
 
 try {
-  program.parse()
+  await program.parseAsync()
 } catch (err) {
   if (err instanceof Error) {
     console.error(`Error: ${err.message}`)
