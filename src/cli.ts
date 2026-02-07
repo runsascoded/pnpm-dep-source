@@ -529,11 +529,17 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
       )
     }
   } else {
-    // Remove from optimizeDeps.exclude
-    // Remove the dep from exclude array
+    // Remove from optimizeDeps.exclude array only
+    const escaped = depName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     content = content.replace(
-      new RegExp(`['"]${depName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"],?\\s*`, 'g'),
-      ''
+      /exclude:\s*\[([^\]]*)\]/,
+      (match, inner: string) => {
+        const cleaned = inner.replace(
+          new RegExp(`\\s*['"]${escaped}['"],?`, 'g'),
+          ''
+        )
+        return `exclude: [${cleaned.trim()}]`
+      }
     )
     // Clean up empty exclude arrays
     content = content.replace(/\s*exclude:\s*\[\s*\],?/g, '')
