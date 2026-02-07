@@ -531,7 +531,11 @@ function updateViteConfig(projectRoot: string, depName: string, exclude: boolean
     }
   }
 
-  writeFileSync(vitePath, mod.generate().code)
+  let code = mod.generate().code
+  if (content.endsWith('\n') && !code.endsWith('\n')) {
+    code += '\n'
+  }
+  writeFileSync(vitePath, code)
 }
 
 function resolveGitHubRef(repo: string, ref: string): string {
