@@ -427,7 +427,11 @@ function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'npm' | 
   return 'unknown'
 }
 
-type RemoteVersions = { npm?: string; github?: string; gitlab?: string }
+type RemoteVersions = {
+  npm?: string
+  github?: string; githubVersion?: string
+  gitlab?: string; gitlabVersion?: string
+}
 
 // Build blue-colored parenthesized suffix showing current ref/version for the active line
 function formatActiveSuffix(info: DepDisplayInfo): string {
@@ -478,14 +482,16 @@ function displayDep(
   if (info.config.github) {
     const isActive = active === 'github'
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
-    const distSuffix = versions?.github ? ` ${c.blue}(dist: ${versions.github})${c.reset}` : ''
+    const distParts = [versions?.github, versions?.githubVersion].filter(Boolean)
+    const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
     const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : ''
     line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix)
   }
   if (info.config.gitlab) {
     const isActive = active === 'gitlab'
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
-    const distSuffix = versions?.gitlab ? ` ${c.blue}(dist: ${versions.gitlab})${c.reset}` : ''
+    const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean)
+    const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
     line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix)
   }
   if (info.config.npm) {
@@ -615,16 +621,20 @@ async function fetchRemoteVersionsAsync(
   const distBranch = dep.distBranch ?? 'dist'
   const npmName = dep.npm ?? depName
 
-  const [npmVersion, ghSha, glSha] = await Promise.all([
+  const [npmVersion, ghSha, ghPkg, glSha, glPkg] = await Promise.all([
     getLatestNpmVersionAsync(npmName).catch(() => undefined),
     dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
+    dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
     dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+    dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
   ])
 
   return {
     npm: npmVersion,
     github: ghSha ? ghSha.slice(0, 7) : undefined,
+    githubVersion: ghPkg?.version as string | undefined,
     gitlab: glSha ? glSha.slice(0, 7) : undefined,
+    gitlabVersion: glPkg?.version as string | undefined,
   }
 }
 
@@ -794,6 +804,24 @@ function fetchGitLabPackageJson(repo: string, ref = 'HEAD'): Record<string, unkn
   const result = spawnSync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], {
     encoding: 'utf-8',
   })
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
+  }
+  return JSON.parse(result.stdout)
+}
+
+async function fetchGitHubPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
+  const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' })
+  if (result.status !== 0) {
+    throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`)
+  }
+  const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
+  return JSON.parse(content)
+}
+
+async function fetchGitLabPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
+  const encodedPath = encodeURIComponent(repo)
+  const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' })
   if (result.status !== 0) {
     throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
   }
@@ -1460,36 +1488,35 @@ program
   })
 
 // Fetch remote version info for a dependency (for verbose listing)
-function fetchRemoteVersions(dep: DepConfig, depName: string): { npm?: string; github?: string; gitlab?: string } {
-  const result: { npm?: string; github?: string; gitlab?: string } = {}
+function fetchRemoteVersions(dep: DepConfig, depName: string): RemoteVersions {
+  const result: RemoteVersions = {}
   const distBranch = dep.distBranch ?? 'dist'
 
-  // Fetch npm version
   const npmName = dep.npm ?? depName
   try {
     result.npm = getLatestNpmVersion(npmName)
-  } catch {
-    // Ignore errors - package may not be on npm
-  }
+  } catch {}
 
-  // Fetch GitHub dist branch SHA
   if (dep.github) {
     try {
       const sha = resolveGitHubRef(dep.github, distBranch)
       result.github = sha.slice(0, 7)
-    } catch {
-      // Ignore errors - dist branch may not exist
-    }
+    } catch {}
+    try {
+      const pkg = fetchGitHubPackageJson(dep.github, distBranch)
+      result.githubVersion = pkg.version as string | undefined
+    } catch {}
   }
 
-  // Fetch GitLab dist branch SHA
   if (dep.gitlab) {
     try {
       const sha = resolveGitLabRef(dep.gitlab, distBranch)
       result.gitlab = sha.slice(0, 7)
-    } catch {
-      // Ignore errors - dist branch may not exist
-    }
+    } catch {}
+    try {
+      const pkg = fetchGitLabPackageJson(dep.gitlab, distBranch)
+      result.gitlabVersion = pkg.version as string | undefined
+    } catch {}
   }
 
   return result
