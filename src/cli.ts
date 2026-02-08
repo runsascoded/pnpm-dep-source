@@ -57,6 +57,7 @@ interface DepConfig {
   gitlab?: string       // e.g. "runsascoded/js/screenshots"
   npm?: string          // e.g. "use-kbd" (defaults to package name from local)
   distBranch?: string   // defaults to "dist"
+  subdir?: string       // e.g. "/packages/client" for monorepo subdirectory
 }
 
 interface Config {
@@ -478,7 +479,8 @@ function displayDep(
     const isActive = active === 'github'
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
     const distSuffix = versions?.github ? ` ${c.blue}(dist: ${versions.github})${c.reset}` : ''
-    line('GitHub', isActive, info.config.github, activeSuffix + distSuffix)
+    const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : ''
+    line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix)
   }
   if (info.config.gitlab) {
     const isActive = active === 'gitlab'
@@ -799,7 +801,8 @@ function fetchGitLabPackageJson(repo: string, ref = 'HEAD'): Record<string, unkn
 }
 
 // Detect GitHub/GitLab repo from git remote in or above the given path
-function detectGitRepo(startPath: string): { github?: string; gitlab?: string } | null {
+// Also returns subdir if startPath is inside a subdirectory of the repo
+function detectGitRepo(startPath: string): { github?: string; gitlab?: string; subdir?: string } | null {
   let dir = startPath
   while (dir !== dirname(dir)) {
     if (existsSync(join(dir, '.git'))) {
@@ -811,13 +814,17 @@ function detectGitRepo(startPath: string): { github?: string; gitlab?: string } 
         return null
       }
 
+      // Calculate subdir relative to git root
+      const relPath = relative(dir, startPath)
+      const subdir = relPath ? `/${relPath}` : undefined
+
       // Parse remote URLs - take the first fetch URL that matches GitHub/GitLab
       for (const line of result.stdout.split('\n')) {
         const match = line.match(/^\S+\s+(\S+)\s+\(fetch\)$/)
         if (match) {
           const parsed = parseRepoUrl(match[1])
           if (parsed.github || parsed.gitlab) {
-            return parsed
+            return { ...parsed, subdir }
           }
         }
       }
@@ -829,7 +836,7 @@ function detectGitRepo(startPath: string): { github?: string; gitlab?: string } 
 }
 
 // Get package info from local path
-function getLocalPackageInfo(localPath: string): PackageInfo {
+function getLocalPackageInfo(localPath: string): PackageInfo & { subdir?: string } {
   const pkgPath = join(localPath, 'package.json')
   if (!existsSync(pkgPath)) {
     throw new Error(`No package.json found at ${localPath}`)
@@ -837,13 +844,16 @@ function getLocalPackageInfo(localPath: string): PackageInfo {
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
   const info = parsePackageJson(pkg)
 
-  // Fallback to git remote detection if no repo found in package.json
-  if (!info.github && !info.gitlab) {
-    const gitRepo = detectGitRepo(localPath)
-    if (gitRepo) {
+  // Detect git repo and subdir
+  const gitRepo = detectGitRepo(localPath)
+  if (gitRepo) {
+    // Fallback to git remote detection if no repo found in package.json
+    if (!info.github && !info.gitlab) {
       info.github = gitRepo.github
       info.gitlab = gitRepo.gitlab
     }
+    // Always capture subdir for monorepo support
+    return { ...info, subdir: gitRepo.subdir }
   }
 
   return info
@@ -1022,6 +1032,15 @@ function switchToLocal(
   console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`)
 }
 
+// Generate GitHub specifier, using git+https URL for monorepo subdirectories
+function makeGitHubSpecifier(repo: string, ref: string, subdir?: string): string {
+  if (subdir) {
+    // pnpm git subdirectory syntax: #ref&path:/subdir
+    return `github:${repo}#${ref}&path:${subdir}`
+  }
+  return `github:${repo}#${ref}`
+}
+
 // Helper to switch a dependency to GitHub mode
 function switchToGitHub(
   projectRoot: string,
@@ -1035,7 +1054,7 @@ function switchToGitHub(
 
   const distBranch = depConfig.distBranch ?? 'dist'
   const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch)
-  const specifier = `github:${depConfig.github}#${resolvedRef}`
+  const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
 
   const pkg = loadPackageJson(projectRoot)
   updatePackageJsonDep(pkg, depName, specifier)
@@ -1058,7 +1077,7 @@ function switchToGitHub(
   // Remove from vite.config.ts optimizeDeps.exclude
   updateViteConfig(projectRoot, depName, false)
 
-  console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`)
+  console.log(`Switched ${depName} to GitHub: ${specifier}`)
 }
 
 // Helper to switch a dependency to GitLab mode
@@ -1168,6 +1187,7 @@ program
     const npmName = options.npm ?? pkgName
     const github = options.github ?? pkgInfo.github
     const gitlab = options.gitlab ?? pkgInfo.gitlab
+    const subdir = 'subdir' in pkgInfo ? (pkgInfo as { subdir?: string }).subdir : undefined
 
     if (isGlobal) {
       const config = loadGlobalConfig()
@@ -1177,12 +1197,14 @@ program
         gitlab,
         npm: npmName,
         distBranch: options.distBranch,
+        subdir,
       }
       saveGlobalConfig(config)
       console.log(`Initialized ${pkgName} (global):`)
       if (localPath) console.log(`  Local path: ${localPath}`)
       if (github) console.log(`  GitHub: ${github}`)
       if (gitlab) console.log(`  GitLab: ${gitlab}`)
+      if (subdir) console.log(`  Subdir: ${subdir}`)
       console.log(`  NPM: ${npmName}`)
       console.log(`  Dist branch: ${options.distBranch}`)
 
@@ -1204,6 +1226,7 @@ program
       gitlab,
       npm: npmName,
       distBranch: options.distBranch,
+      subdir,
     }
     config.dependencies[pkgName] = depConfig
 
@@ -1212,6 +1235,7 @@ program
     if (relLocalPath) console.log(`  Local path: ${relLocalPath}`)
     if (github) console.log(`  GitHub: ${github}`)
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
+    if (subdir) console.log(`  Subdir: ${subdir}`)
     console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
 
@@ -1654,7 +1678,7 @@ program
       resolvedRef = resolveGitHubRef(depConfig.github, distBranch)
     }
 
-    const specifier = `github:${depConfig.github}#${resolvedRef}`
+    const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
 
     if (options.dryRun) {
       console.log(`Would switch ${depName} to: ${specifier}`)
@@ -1817,7 +1841,7 @@ program
     // Resolve ref for dry-run or actual switch
     if (hasGitHub) {
       const ref = resolvedRef ?? resolveGitHubRef(depConfig.github!, distBranch)
-      const specifier = `github:${depConfig.github}#${ref}`
+      const specifier = makeGitHubSpecifier(depConfig.github!, ref, depConfig.subdir)
 
       if (options.dryRun) {
         console.log(`Would switch ${depName} to: ${specifier}`)
