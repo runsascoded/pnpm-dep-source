@@ -391,14 +391,16 @@ function displayDep(info, verbose = false, remoteVersions) {
     if (info.config.github) {
         const isActive = active === 'github';
         const activeSuffix = isActive ? formatActiveSuffix(info) : '';
-        const distSuffix = versions?.github ? ` ${c.blue}(dist: ${versions.github})${c.reset}` : '';
+        const distParts = [versions?.github, versions?.githubVersion].filter(Boolean);
+        const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : '';
         const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : '';
         line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix);
     }
     if (info.config.gitlab) {
         const isActive = active === 'gitlab';
         const activeSuffix = isActive ? formatActiveSuffix(info) : '';
-        const distSuffix = versions?.gitlab ? ` ${c.blue}(dist: ${versions.gitlab})${c.reset}` : '';
+        const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean);
+        const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : '';
         line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix);
     }
     if (info.config.npm) {
@@ -497,15 +499,19 @@ async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
 async function fetchRemoteVersionsAsync(dep, depName) {
     const distBranch = dep.distBranch ?? 'dist';
     const npmName = dep.npm ?? depName;
-    const [npmVersion, ghSha, glSha] = await Promise.all([
+    const [npmVersion, ghSha, ghPkg, glSha, glPkg] = await Promise.all([
         getLatestNpmVersionAsync(npmName).catch(() => undefined),
         dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
+        dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
         dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+        dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
     ]);
     return {
         npm: npmVersion,
         github: ghSha ? ghSha.slice(0, 7) : undefined,
+        githubVersion: ghPkg?.version,
         gitlab: glSha ? glSha.slice(0, 7) : undefined,
+        gitlabVersion: glPkg?.version,
     };
 }
 function updateViteConfig(projectRoot, depName, exclude) {
@@ -658,6 +664,22 @@ function fetchGitLabPackageJson(repo, ref = 'HEAD') {
     const result = spawnSync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], {
         encoding: 'utf-8',
     });
+    if (result.status !== 0) {
+        throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`);
+    }
+    return JSON.parse(result.stdout);
+}
+async function fetchGitHubPackageJsonAsync(repo, ref = 'HEAD') {
+    const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' });
+    if (result.status !== 0) {
+        throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`);
+    }
+    const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8');
+    return JSON.parse(content);
+}
+async function fetchGitLabPackageJsonAsync(repo, ref = 'HEAD') {
+    const encodedPath = encodeURIComponent(repo);
+    const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' });
     if (result.status !== 0) {
         throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`);
     }
@@ -1262,33 +1284,34 @@ program
 function fetchRemoteVersions(dep, depName) {
     const result = {};
     const distBranch = dep.distBranch ?? 'dist';
-    // Fetch npm version
     const npmName = dep.npm ?? depName;
     try {
         result.npm = getLatestNpmVersion(npmName);
     }
-    catch {
-        // Ignore errors - package may not be on npm
-    }
-    // Fetch GitHub dist branch SHA
+    catch { }
     if (dep.github) {
         try {
             const sha = resolveGitHubRef(dep.github, distBranch);
             result.github = sha.slice(0, 7);
         }
-        catch {
-            // Ignore errors - dist branch may not exist
+        catch { }
+        try {
+            const pkg = fetchGitHubPackageJson(dep.github, distBranch);
+            result.githubVersion = pkg.version;
         }
+        catch { }
     }
-    // Fetch GitLab dist branch SHA
     if (dep.gitlab) {
         try {
             const sha = resolveGitLabRef(dep.gitlab, distBranch);
             result.gitlab = sha.slice(0, 7);
         }
-        catch {
-            // Ignore errors - dist branch may not exist
+        catch { }
+        try {
+            const pkg = fetchGitLabPackageJson(dep.gitlab, distBranch);
+            result.gitlabVersion = pkg.version;
         }
+        catch { }
     }
     return result;
 }
