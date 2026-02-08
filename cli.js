@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { program } from 'commander';
-import { execSync, spawnSync } from 'child_process';
+import { execSync, spawn, spawnSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
+import { parseModule } from 'magicast';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,6 +27,20 @@ const VERSION = pkgJson.version;
 const CONFIG_FILE = '.pnpm-dep-source.json';
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source');
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json');
+function spawnAsync(cmd, args, opts) {
+    return new Promise((resolve) => {
+        const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const stdout = [];
+        const stderr = [];
+        child.stdout.setEncoding(opts.encoding);
+        child.stderr.setEncoding(opts.encoding);
+        child.stdout.on('data', (d) => stdout.push(d));
+        child.stderr.on('data', (d) => stderr.push(d));
+        child.on('close', (status) => {
+            resolve({ status, stdout: stdout.join(''), stderr: stderr.join('') });
+        });
+    });
+}
 // Common subdirectories where JS projects might live
 const JS_PROJECT_SUBDIRS = ['www', 'web', 'app', 'frontend', 'client', 'packages', 'src'];
 // Find project root (directory containing package.json)
@@ -245,42 +260,297 @@ function getCurrentSource(pkg, depName) {
     const devDeps = pkg.devDependencies;
     return deps?.[depName] ?? devDeps?.[depName] ?? '(not found)';
 }
+function getInstalledVersion(projectRoot, depName) {
+    const pkgPath = join(projectRoot, 'node_modules', depName, 'package.json');
+    if (!existsSync(pkgPath)) {
+        return null;
+    }
+    try {
+        const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+        return pkg.version ?? null;
+    }
+    catch {
+        return null;
+    }
+}
+function getLocalGitInfo(localPath) {
+    if (!existsSync(localPath)) {
+        return null;
+    }
+    try {
+        // Get short SHA
+        const shaResult = spawnSync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], {
+            encoding: 'utf-8',
+        });
+        if (shaResult.status !== 0) {
+            return null;
+        }
+        const sha = shaResult.stdout.trim();
+        // Check if dirty
+        const statusResult = spawnSync('git', ['-C', localPath, 'status', '--porcelain'], {
+            encoding: 'utf-8',
+        });
+        const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0;
+        return { sha, dirty };
+    }
+    catch {
+        return null;
+    }
+}
+async function getLocalGitInfoAsync(localPath) {
+    if (!existsSync(localPath)) {
+        return null;
+    }
+    try {
+        const [shaResult, statusResult] = await Promise.all([
+            spawnAsync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf-8' }),
+            spawnAsync('git', ['-C', localPath, 'status', '--porcelain'], { encoding: 'utf-8' }),
+        ]);
+        if (shaResult.status !== 0) {
+            return null;
+        }
+        const sha = shaResult.stdout.trim();
+        const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0;
+        return { sha, dirty };
+    }
+    catch {
+        return null;
+    }
+}
+// ANSI color codes (only used when stdout is TTY)
+const isTTY = process.stdout.isTTY;
+const c = {
+    reset: isTTY ? '\x1b[0m' : '',
+    bold: isTTY ? '\x1b[1m' : '',
+    cyan: isTTY ? '\x1b[36m' : '',
+    green: isTTY ? '\x1b[32m' : '',
+    yellow: isTTY ? '\x1b[33m' : '',
+    blue: isTTY ? '\x1b[34m' : '',
+    red: isTTY ? '\x1b[31m' : '',
+    magenta: isTTY ? '\x1b[35m' : '',
+};
+function formatGitInfo(info) {
+    if (!info)
+        return '';
+    const dirtyStr = info.dirty ? ` ${c.red}dirty${c.reset}` : '';
+    return ` ${c.blue}(${info.sha}${dirtyStr}${c.blue})${c.reset}`;
+}
+function getSourceType(source) {
+    if (source === 'workspace:*' || source === 'local')
+        return 'local';
+    if (source.startsWith('github:'))
+        return 'github';
+    if (source.includes('gitlab.com') && source.includes('/-/archive/'))
+        return 'gitlab';
+    if (source.match(/^\^?\d|^latest/))
+        return 'npm';
+    return 'unknown';
+}
+// Build blue-colored parenthesized suffix showing current ref/version for the active line
+function formatActiveSuffix(info) {
+    if (info.sourceType === 'local')
+        return '';
+    const parts = [];
+    if (info.isGlobal && info.currentSpecifier) {
+        parts.push(info.currentSpecifier);
+    }
+    else {
+        if (info.sourceType === 'github') {
+            const match = info.currentSource.match(/#([a-f0-9]+)$/);
+            if (match)
+                parts.push(match[1].slice(0, 7));
+        }
+        else if (info.sourceType === 'gitlab') {
+            const match = info.currentSource.match(/\/-\/archive\/([^/]+)\//);
+            if (match)
+                parts.push(match[1].slice(0, 7));
+        }
+        if (info.version)
+            parts.push(info.version);
+    }
+    if (parts.length === 0)
+        return '';
+    return ` ${c.blue}(${parts.join('; ')})${c.reset}`;
+}
+function displayDep(info, verbose = false, remoteVersions) {
+    const tag = info.isGlobal ? ` ${c.yellow}[global]${c.reset}`
+        : info.isDev ? ` ${c.yellow}[dev]${c.reset}`
+            : '';
+    console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${tag}:`);
+    const active = info.sourceType;
+    const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined;
+    function line(label, isActive, value, suffix = '') {
+        const prefix = !isTTY && isActive ? '> ' : '  ';
+        const coloredLabel = isActive ? `${c.green}${label}${c.reset}` : label;
+        console.log(`${prefix}${coloredLabel}: ${value}${suffix}`);
+    }
+    if (info.config.localPath) {
+        const gitSuffix = info.gitInfo ? formatGitInfo(info.gitInfo) : '';
+        line('Local', active === 'local', info.config.localPath, gitSuffix);
+    }
+    if (info.config.github) {
+        const isActive = active === 'github';
+        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
+        const distSuffix = versions?.github ? ` ${c.blue}(dist: ${versions.github})${c.reset}` : '';
+        const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : '';
+        line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix);
+    }
+    if (info.config.gitlab) {
+        const isActive = active === 'gitlab';
+        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
+        const distSuffix = versions?.gitlab ? ` ${c.blue}(dist: ${versions.gitlab})${c.reset}` : '';
+        line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix);
+    }
+    if (info.config.npm) {
+        const isActive = active === 'npm';
+        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
+        const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm})${c.reset}` : '';
+        line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix);
+    }
+}
+function buildGlobalDepInfo(name, dep) {
+    const installSource = getGlobalInstallSource(name);
+    let sourceType = 'unknown';
+    let gitInfo = null;
+    if (installSource) {
+        sourceType = getSourceType(installSource.source);
+        if (sourceType === 'local' && dep.localPath) {
+            gitInfo = getLocalGitInfo(dep.localPath);
+        }
+    }
+    return {
+        name,
+        currentSource: installSource?.source ?? '(not installed)',
+        currentSpecifier: installSource?.specifier,
+        sourceType,
+        isGlobal: true,
+        gitInfo,
+        config: dep,
+    };
+}
+function buildProjectDepInfo(name, dep, projectRoot, pkg) {
+    const currentSource = getCurrentSource(pkg, name);
+    const sourceType = getSourceType(currentSource);
+    const devDeps = pkg.devDependencies;
+    const isDev = !!(devDeps && name in devDeps);
+    let version;
+    let gitInfo = null;
+    if (sourceType === 'local' && dep.localPath) {
+        gitInfo = getLocalGitInfo(resolve(projectRoot, dep.localPath));
+    }
+    else {
+        version = getInstalledVersion(projectRoot, name) ?? undefined;
+    }
+    return {
+        name,
+        currentSource,
+        sourceType,
+        isDev,
+        version,
+        gitInfo,
+        config: dep,
+    };
+}
+async function buildGlobalDepInfoAsync(name, dep, globalSources) {
+    const installSource = globalSources.get(name) ?? null;
+    let sourceType = 'unknown';
+    let gitInfo = null;
+    if (installSource) {
+        sourceType = getSourceType(installSource.source);
+        if (sourceType === 'local' && dep.localPath) {
+            gitInfo = await getLocalGitInfoAsync(dep.localPath);
+        }
+    }
+    return {
+        name,
+        currentSource: installSource?.source ?? '(not installed)',
+        currentSpecifier: installSource?.specifier,
+        sourceType,
+        isGlobal: true,
+        gitInfo,
+        config: dep,
+    };
+}
+async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
+    const currentSource = getCurrentSource(pkg, name);
+    const sourceType = getSourceType(currentSource);
+    const devDeps = pkg.devDependencies;
+    const isDev = !!(devDeps && name in devDeps);
+    let version;
+    let gitInfo = null;
+    if (sourceType === 'local' && dep.localPath) {
+        gitInfo = await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath));
+    }
+    else {
+        version = getInstalledVersion(projectRoot, name) ?? undefined;
+    }
+    return {
+        name,
+        currentSource,
+        sourceType,
+        isDev,
+        version,
+        gitInfo,
+        config: dep,
+    };
+}
+async function fetchRemoteVersionsAsync(dep, depName) {
+    const distBranch = dep.distBranch ?? 'dist';
+    const npmName = dep.npm ?? depName;
+    const [npmVersion, ghSha, glSha] = await Promise.all([
+        getLatestNpmVersionAsync(npmName).catch(() => undefined),
+        dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
+        dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+    ]);
+    return {
+        npm: npmVersion,
+        github: ghSha ? ghSha.slice(0, 7) : undefined,
+        gitlab: glSha ? glSha.slice(0, 7) : undefined,
+    };
+}
 function updateViteConfig(projectRoot, depName, exclude) {
     const vitePath = join(projectRoot, 'vite.config.ts');
     if (!existsSync(vitePath)) {
-        return; // No vite config, nothing to do
+        return;
     }
-    let content = readFileSync(vitePath, 'utf-8');
+    const content = readFileSync(vitePath, 'utf-8');
+    let mod;
+    try {
+        mod = parseModule(content);
+    }
+    catch {
+        return;
+    }
+    // Handle both `export default defineConfig({...})` and `export default {...}`
+    const raw = mod.exports.default;
+    const config = raw?.$args ? raw.$args[0] : raw;
+    if (!config)
+        return;
     if (exclude) {
-        // Add to optimizeDeps.exclude if not present
-        if (content.includes('optimizeDeps:')) {
-            if (!content.includes(`'${depName}'`) && !content.includes(`"${depName}"`)) {
-                // Add to existing exclude array
-                content = content.replace(/exclude:\s*\[([^\]]*)\]/, (_, inner) => {
-                    const items = inner.trim() ? inner.trim() + `, '${depName}'` : `'${depName}'`;
-                    return `exclude: [${items}]`;
-                });
-                if (!content.includes(`'${depName}'`)) {
-                    // No exclude array, add one
-                    content = content.replace(/optimizeDeps:\s*\{([^}]*)\}/, (_, inner) => `optimizeDeps: {${inner.trimEnd()}\n    exclude: ['${depName}'],\n  }`);
-                }
-            }
-        }
-        else {
-            // Add optimizeDeps section before closing })
-            content = content.replace(/}\)\s*$/, `  optimizeDeps: {\n    exclude: ['${depName}'],\n  },\n})\n`);
+        if (!config.optimizeDeps)
+            config.optimizeDeps = {};
+        if (!config.optimizeDeps.exclude)
+            config.optimizeDeps.exclude = [];
+        if (!config.optimizeDeps.exclude.includes(depName)) {
+            config.optimizeDeps.exclude.push(depName);
         }
     }
     else {
-        // Remove from optimizeDeps.exclude
-        // Remove the dep from exclude array
-        content = content.replace(new RegExp(`['"]${depName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"],?\\s*`, 'g'), '');
-        // Clean up empty exclude arrays
-        content = content.replace(/\s*exclude:\s*\[\s*\],?/g, '');
-        // Clean up empty optimizeDeps (including leading whitespace)
-        content = content.replace(/\s*optimizeDeps:\s*\{\s*\},?/g, '');
+        if (config.optimizeDeps?.exclude) {
+            config.optimizeDeps.exclude = config.optimizeDeps.exclude.filter((x) => x !== depName);
+            if (config.optimizeDeps.exclude.length === 0) {
+                delete config.optimizeDeps.exclude;
+            }
+        }
+        if (config.optimizeDeps && Object.keys(config.optimizeDeps).length === 0) {
+            delete config.optimizeDeps;
+        }
     }
-    writeFileSync(vitePath, content);
+    let code = mod.generate().code;
+    if (content.endsWith('\n') && !code.endsWith('\n')) {
+        code += '\n';
+    }
+    writeFileSync(vitePath, code);
 }
 function resolveGitHubRef(repo, ref) {
     // Use gh api to resolve ref to SHA from GitHub
@@ -292,12 +562,33 @@ function resolveGitHubRef(repo, ref) {
     }
     return result.stdout.trim();
 }
+async function resolveGitHubRefAsync(repo, ref) {
+    const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' });
+    if (result.status !== 0) {
+        throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`);
+    }
+    return result.stdout.trim();
+}
 function resolveGitLabRef(repo, ref) {
     // Use glab api to resolve ref to SHA from GitLab
     const encodedRepo = encodeURIComponent(repo);
     const result = spawnSync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], {
         encoding: 'utf-8',
     });
+    if (result.status !== 0) {
+        throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`);
+    }
+    try {
+        const data = JSON.parse(result.stdout);
+        return data.id;
+    }
+    catch {
+        throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`);
+    }
+}
+async function resolveGitLabRefAsync(repo, ref) {
+    const encodedRepo = encodeURIComponent(repo);
+    const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' });
     if (result.status !== 0) {
         throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`);
     }
@@ -373,6 +664,7 @@ function fetchGitLabPackageJson(repo, ref = 'HEAD') {
     return JSON.parse(result.stdout);
 }
 // Detect GitHub/GitLab repo from git remote in or above the given path
+// Also returns subdir if startPath is inside a subdirectory of the repo
 function detectGitRepo(startPath) {
     let dir = startPath;
     while (dir !== dirname(dir)) {
@@ -384,13 +676,16 @@ function detectGitRepo(startPath) {
             if (result.status !== 0) {
                 return null;
             }
+            // Calculate subdir relative to git root
+            const relPath = relative(dir, startPath);
+            const subdir = relPath ? `/${relPath}` : undefined;
             // Parse remote URLs - take the first fetch URL that matches GitHub/GitLab
             for (const line of result.stdout.split('\n')) {
                 const match = line.match(/^\S+\s+(\S+)\s+\(fetch\)$/);
                 if (match) {
                     const parsed = parseRepoUrl(match[1]);
                     if (parsed.github || parsed.gitlab) {
-                        return parsed;
+                        return { ...parsed, subdir };
                     }
                 }
             }
@@ -408,13 +703,16 @@ function getLocalPackageInfo(localPath) {
     }
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
     const info = parsePackageJson(pkg);
-    // Fallback to git remote detection if no repo found in package.json
-    if (!info.github && !info.gitlab) {
-        const gitRepo = detectGitRepo(localPath);
-        if (gitRepo) {
+    // Detect git repo and subdir
+    const gitRepo = detectGitRepo(localPath);
+    if (gitRepo) {
+        // Fallback to git remote detection if no repo found in package.json
+        if (!info.github && !info.gitlab) {
             info.github = gitRepo.github;
             info.gitlab = gitRepo.gitlab;
         }
+        // Always capture subdir for monorepo support
+        return { ...info, subdir: gitRepo.subdir };
     }
     return info;
 }
@@ -452,7 +750,12 @@ function getLocalPackageName(localPath) {
 }
 function runPnpmInstall(projectRoot) {
     console.log('Running pnpm install...');
-    execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' });
+    try {
+        execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' });
+    }
+    catch {
+        console.error(`${c.yellow}Warning: pnpm install failed (config changes were saved)${c.reset}`);
+    }
 }
 function runGlobalInstall(specifier) {
     console.log(`Running pnpm add -g ${specifier}...`);
@@ -467,50 +770,88 @@ function getLatestNpmVersion(packageName) {
     }
     return result.stdout.trim();
 }
-function getGlobalInstallSource(packageName = 'pnpm-dep-source') {
-    const result = spawnSync('pnpm', ['list', '-g', packageName, '--json'], {
+async function getLatestNpmVersionAsync(packageName) {
+    const result = await spawnAsync('npm', ['view', packageName, 'version'], { encoding: 'utf-8' });
+    if (result.status !== 0) {
+        throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`);
+    }
+    return result.stdout.trim();
+}
+// Cache for global install sources (fetched once via pnpm list -g --json)
+let globalInstallCache = null;
+function parseGlobalPkgSource(pkg, globalDir) {
+    const version = pkg.version || '';
+    const resolved = pkg.resolved || '';
+    // Local file install: version is "file:..." path
+    if (version.startsWith('file:')) {
+        const filePath = version.slice(5);
+        const absPath = globalDir ? resolve(globalDir, filePath) : filePath;
+        return { source: 'local', specifier: absPath };
+    }
+    // Check resolved URL for source detection
+    if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
+        const shaMatch = resolved.match(/([a-f0-9]{40})/);
+        const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
+        return { source: 'github', specifier: `${sha}; ${version}` };
+    }
+    else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
+        const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//);
+        const ref = refMatch ? refMatch[1].slice(0, 7) : '';
+        return { source: 'gitlab', specifier: `${ref}; ${version}` };
+    }
+    else if (version) {
+        return { source: 'npm', specifier: version };
+    }
+    return null;
+}
+function fetchAllGlobalInstallSources() {
+    if (globalInstallCache)
+        return globalInstallCache;
+    globalInstallCache = new Map();
+    const result = spawnSync('pnpm', ['list', '-g', '--json'], {
         encoding: 'utf-8',
     });
-    if (result.status !== 0) {
-        return null;
-    }
+    if (result.status !== 0)
+        return globalInstallCache;
     try {
         const data = JSON.parse(result.stdout);
-        // pnpm list -g --json returns array of global packages
-        const pkg = data[0]?.dependencies?.[packageName];
-        if (!pkg)
-            return null;
-        const version = pkg.version || '';
-        const resolved = pkg.resolved || '';
-        // Local file install: version is "file:..." path
-        if (version.startsWith('file:')) {
-            // Resolve relative path to absolute (relative to pnpm global dir)
-            const filePath = version.slice(5); // remove "file:"
-            const globalDir = data[0]?.path || '';
-            const absPath = globalDir ? resolve(globalDir, filePath) : filePath;
-            return { source: 'local', specifier: absPath };
+        const globalDir = data[0]?.path || '';
+        const deps = data[0]?.dependencies ?? {};
+        for (const [name, pkg] of Object.entries(deps)) {
+            const source = parseGlobalPkgSource(pkg, globalDir);
+            if (source) {
+                globalInstallCache.set(name, source);
+            }
         }
-        // Check resolved URL for source detection
-        if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
-            // Extract SHA from GitHub URL
-            const shaMatch = resolved.match(/([a-f0-9]{40})/);
-            const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
-            return { source: 'github', specifier: `${sha}; ${version}` };
-        }
-        else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
-            // Extract ref from GitLab tarball URL
-            const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//);
-            const ref = refMatch ? refMatch[1].slice(0, 7) : '';
-            return { source: 'gitlab', specifier: `${ref}; ${version}` };
-        }
-        else if (version) {
-            return { source: 'npm', specifier: version };
-        }
-        return null;
     }
     catch {
-        return null;
+        // Ignore parse errors
     }
+    return globalInstallCache;
+}
+async function fetchAllGlobalInstallSourcesAsync() {
+    const map = new Map();
+    const result = await spawnAsync('pnpm', ['list', '-g', '--json'], { encoding: 'utf-8' });
+    if (result.status !== 0)
+        return map;
+    try {
+        const data = JSON.parse(result.stdout);
+        const globalDir = data[0]?.path || '';
+        const deps = data[0]?.dependencies ?? {};
+        for (const [name, pkg] of Object.entries(deps)) {
+            const source = parseGlobalPkgSource(pkg, globalDir);
+            if (source) {
+                map.set(name, source);
+            }
+        }
+    }
+    catch {
+        // Ignore parse errors
+    }
+    return map;
+}
+function getGlobalInstallSource(packageName = 'pnpm-dep-source') {
+    return fetchAllGlobalInstallSources().get(packageName) ?? null;
 }
 // Helper to switch a dependency to local mode
 function switchToLocal(projectRoot, depName, localPath) {
@@ -531,6 +872,14 @@ function switchToLocal(projectRoot, depName, localPath) {
     updateViteConfig(projectRoot, depName, true);
     console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`);
 }
+// Generate GitHub specifier, using git+https URL for monorepo subdirectories
+function makeGitHubSpecifier(repo, ref, subdir) {
+    if (subdir) {
+        // pnpm git subdirectory syntax: #ref&path:/subdir
+        return `github:${repo}#${ref}&path:${subdir}`;
+    }
+    return `github:${repo}#${ref}`;
+}
 // Helper to switch a dependency to GitHub mode
 function switchToGitHub(projectRoot, depName, depConfig, ref) {
     if (!depConfig.github) {
@@ -538,7 +887,7 @@ function switchToGitHub(projectRoot, depName, depConfig, ref) {
     }
     const distBranch = depConfig.distBranch ?? 'dist';
     const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch);
-    const specifier = `github:${depConfig.github}#${resolvedRef}`;
+    const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir);
     const pkg = loadPackageJson(projectRoot);
     updatePackageJsonDep(pkg, depName, specifier);
     removePnpmOverride(pkg, depName);
@@ -558,7 +907,7 @@ function switchToGitHub(projectRoot, depName, depConfig, ref) {
     }
     // Remove from vite.config.ts optimizeDeps.exclude
     updateViteConfig(projectRoot, depName, false);
-    console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`);
+    console.log(`Switched ${depName} to GitHub: ${specifier}`);
 }
 // Helper to switch a dependency to GitLab mode
 function switchToGitLab(projectRoot, depName, depConfig, ref) {
@@ -597,7 +946,7 @@ program
     .version(VERSION)
     .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools');
 program
-    .command('init <path-or-url>')
+    .command('init [path-or-url]')
     .description('Initialize a dependency from local path or repo URL and activate it')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
     .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
@@ -607,7 +956,11 @@ program
     .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
     .option('-l, --local <path>', 'Local path (when initializing from URL)')
     .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-    .action((pathOrUrl, options) => {
+    .action((pathOrUrl, options, cmd) => {
+    if (!pathOrUrl) {
+        cmd.help();
+        return;
+    }
     const isGlobal = program.opts().global;
     const isUrl = isRepoUrl(pathOrUrl);
     let pkgInfo;
@@ -650,6 +1003,7 @@ program
     const npmName = options.npm ?? pkgName;
     const github = options.github ?? pkgInfo.github;
     const gitlab = options.gitlab ?? pkgInfo.gitlab;
+    const subdir = 'subdir' in pkgInfo ? pkgInfo.subdir : undefined;
     if (isGlobal) {
         const config = loadGlobalConfig();
         config.dependencies[pkgName] = {
@@ -658,6 +1012,7 @@ program
             gitlab,
             npm: npmName,
             distBranch: options.distBranch,
+            subdir,
         };
         saveGlobalConfig(config);
         console.log(`Initialized ${pkgName} (global):`);
@@ -667,6 +1022,8 @@ program
             console.log(`  GitHub: ${github}`);
         if (gitlab)
             console.log(`  GitLab: ${gitlab}`);
+        if (subdir)
+            console.log(`  Subdir: ${subdir}`);
         console.log(`  NPM: ${npmName}`);
         console.log(`  Dist branch: ${options.distBranch}`);
         // Activate for global: install from local path if provided
@@ -685,6 +1042,7 @@ program
         gitlab,
         npm: npmName,
         distBranch: options.distBranch,
+        subdir,
     };
     config.dependencies[pkgName] = depConfig;
     saveConfig(projectRoot, config);
@@ -695,6 +1053,8 @@ program
         console.log(`  GitHub: ${github}`);
     if (gitlab)
         console.log(`  GitLab: ${gitlab}`);
+    if (subdir)
+        console.log(`  Subdir: ${subdir}`);
     console.log(`  NPM: ${npmName}`);
     console.log(`  Dist branch: ${options.distBranch}`);
     // Activate the dependency based on input type
@@ -936,126 +1296,83 @@ program
     .command('list')
     .alias('ls')
     .description('List configured dependencies and their current sources')
+    .option('-a, --all', 'Show both project and global dependencies')
     .option('-v, --verbose', 'Show available remote versions')
-    .action((options) => {
-    if (program.opts().global) {
+    .action(async (options) => {
+    await listDepsAsync(options.verbose ?? false, options.all);
+});
+// Helper for list/versions commands
+async function listDepsAsync(verbose, all) {
+    const isGlobal = program.opts().global;
+    // Kick off global sources fetch early (if needed)
+    const globalSourcesPromise = (isGlobal || all)
+        ? fetchAllGlobalInstallSourcesAsync()
+        : undefined;
+    if (isGlobal && !all) {
         const config = loadGlobalConfig();
         if (Object.keys(config.dependencies).length === 0) {
-            console.log('No global dependencies configured. Use "pds init -G <path>" to add one.');
+            console.log('No global dependencies configured. Use "pds -g init <path>" to add one.');
             return;
         }
-        for (const [name, dep] of Object.entries(config.dependencies)) {
-            const installSource = getGlobalInstallSource(name);
-            console.log(`${name}:`);
-            console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`);
-            console.log(`  Local: ${dep.localPath}`);
-            if (dep.github)
-                console.log(`  GitHub: ${dep.github}`);
-            if (dep.gitlab)
-                console.log(`  GitLab: ${dep.gitlab}`);
-            if (dep.npm)
-                console.log(`  NPM: ${dep.npm}`);
-            if (options.verbose) {
-                const versions = fetchRemoteVersions(dep, name);
-                if (versions.npm)
-                    console.log(`  NPM latest: ${versions.npm}`);
-                if (versions.github)
-                    console.log(`  GitHub dist: ${versions.github}`);
-                if (versions.gitlab)
-                    console.log(`  GitLab dist: ${versions.gitlab}`);
-            }
+        const entries = Object.entries(config.dependencies);
+        // Launch dep info builds and remote version fetches all concurrently
+        const [infos, remoteVersions] = await Promise.all([
+            globalSourcesPromise.then(sources => Promise.all(entries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))),
+            verbose
+                ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+                : Promise.resolve([]),
+        ]);
+        for (let i = 0; i < infos.length; i++) {
+            displayDep(infos[i], verbose, remoteVersions[i]);
         }
         return;
     }
-    const projectRoot = findProjectRoot();
-    const config = loadConfig(projectRoot);
-    const pkg = loadPackageJson(projectRoot);
-    if (Object.keys(config.dependencies).length === 0) {
-        console.log('No dependencies configured. Use "pnpm-dep-source init <path>" to add one.');
-        return;
-    }
-    for (const [name, dep] of Object.entries(config.dependencies)) {
-        const current = getCurrentSource(pkg, name);
-        console.log(`${name}:`);
-        console.log(`  Current: ${current}`);
-        console.log(`  Local: ${dep.localPath}`);
-        if (dep.github)
-            console.log(`  GitHub: ${dep.github}`);
-        if (dep.gitlab)
-            console.log(`  GitLab: ${dep.gitlab}`);
-        if (dep.npm)
-            console.log(`  NPM: ${dep.npm}`);
-        if (options.verbose) {
-            const versions = fetchRemoteVersions(dep, name);
-            if (versions.npm)
-                console.log(`  NPM latest: ${versions.npm}`);
-            if (versions.github)
-                console.log(`  GitHub dist: ${versions.github}`);
-            if (versions.gitlab)
-                console.log(`  GitLab dist: ${versions.gitlab}`);
+    // Gather entries from project and global configs
+    let projectRoot;
+    let projectEntries = [];
+    let pkg;
+    if (!isGlobal) {
+        projectRoot = findProjectRoot();
+        const config = loadConfig(projectRoot);
+        pkg = loadPackageJson(projectRoot);
+        if (Object.keys(config.dependencies).length === 0 && !all) {
+            console.log('No dependencies configured. Use "pds init <path>" to add one.');
+            return;
         }
+        projectEntries = Object.entries(config.dependencies);
     }
-});
+    let globalEntries = [];
+    if (all) {
+        const globalConfig = loadGlobalConfig();
+        globalEntries = Object.entries(globalConfig.dependencies);
+    }
+    // Launch everything concurrently: dep info builds, global sources, and remote version fetches
+    const [projectInfos, globalInfos, projectVersions, globalVersions] = await Promise.all([
+        Promise.all(projectEntries.map(([name, dep]) => buildProjectDepInfoAsync(name, dep, projectRoot, pkg))),
+        globalSourcesPromise
+            ? globalSourcesPromise.then(sources => Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources))))
+            : Promise.resolve([]),
+        verbose
+            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+            : Promise.resolve([]),
+        verbose
+            ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+            : Promise.resolve([]),
+    ]);
+    // Print in order after all data collected
+    for (let i = 0; i < projectInfos.length; i++) {
+        displayDep(projectInfos[i], verbose, projectVersions[i]);
+    }
+    for (let i = 0; i < globalInfos.length; i++) {
+        displayDep(globalInfos[i], verbose, globalVersions[i]);
+    }
+}
 program
     .command('versions')
     .alias('v')
     .description('List dependencies with available remote versions (alias for ls -v)')
-    .action(() => {
-    // Re-use the list command logic with verbose=true
-    const isGlobal = program.opts().global;
-    if (isGlobal) {
-        const config = loadGlobalConfig();
-        if (Object.keys(config.dependencies).length === 0) {
-            console.log('No global dependencies configured. Use "pds init -G <path>" to add one.');
-            return;
-        }
-        for (const [name, dep] of Object.entries(config.dependencies)) {
-            const installSource = getGlobalInstallSource(name);
-            console.log(`${name}:`);
-            console.log(`  Current: ${installSource ? `${installSource.source} (${installSource.specifier})` : '(not installed)'}`);
-            console.log(`  Local: ${dep.localPath}`);
-            if (dep.github)
-                console.log(`  GitHub: ${dep.github}`);
-            if (dep.gitlab)
-                console.log(`  GitLab: ${dep.gitlab}`);
-            if (dep.npm)
-                console.log(`  NPM: ${dep.npm}`);
-            const versions = fetchRemoteVersions(dep, name);
-            if (versions.npm)
-                console.log(`  NPM latest: ${versions.npm}`);
-            if (versions.github)
-                console.log(`  GitHub dist: ${versions.github}`);
-            if (versions.gitlab)
-                console.log(`  GitLab dist: ${versions.gitlab}`);
-        }
-        return;
-    }
-    const projectRoot = findProjectRoot();
-    const config = loadConfig(projectRoot);
-    const pkg = loadPackageJson(projectRoot);
-    if (Object.keys(config.dependencies).length === 0) {
-        console.log('No dependencies configured. Use "pnpm-dep-source init <path>" to add one.');
-        return;
-    }
-    for (const [name, dep] of Object.entries(config.dependencies)) {
-        const current = getCurrentSource(pkg, name);
-        console.log(`${name}:`);
-        console.log(`  Current: ${current}`);
-        console.log(`  Local: ${dep.localPath}`);
-        if (dep.github)
-            console.log(`  GitHub: ${dep.github}`);
-        if (dep.gitlab)
-            console.log(`  GitLab: ${dep.gitlab}`);
-        if (dep.npm)
-            console.log(`  NPM: ${dep.npm}`);
-        const versions = fetchRemoteVersions(dep, name);
-        if (versions.npm)
-            console.log(`  NPM latest: ${versions.npm}`);
-        if (versions.github)
-            console.log(`  GitHub dist: ${versions.github}`);
-        if (versions.gitlab)
-            console.log(`  GitLab dist: ${versions.gitlab}`);
-    }
+    .action(async () => {
+    await listDepsAsync(true);
 });
 program
     .command('local [dep]')
@@ -1130,14 +1447,14 @@ program
         // No ref provided: use dist branch, resolve to SHA
         resolvedRef = resolveGitHubRef(depConfig.github, distBranch);
     }
-    const specifier = `github:${depConfig.github}#${resolvedRef}`;
+    const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir);
     if (options.dryRun) {
         console.log(`Would switch ${depName} to: ${specifier}`);
         return;
     }
     if (isGlobal) {
         runGlobalInstall(specifier);
-        console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${resolvedRef}`);
+        console.log(`Installed ${depName} globally from GitHub: ${specifier}`);
         return;
     }
     const projectRoot = findProjectRoot();
@@ -1269,14 +1586,14 @@ program
     // Resolve ref for dry-run or actual switch
     if (hasGitHub) {
         const ref = resolvedRef ?? resolveGitHubRef(depConfig.github, distBranch);
-        const specifier = `github:${depConfig.github}#${ref}`;
+        const specifier = makeGitHubSpecifier(depConfig.github, ref, depConfig.subdir);
         if (options.dryRun) {
             console.log(`Would switch ${depName} to: ${specifier}`);
             return;
         }
         if (isGlobal) {
             runGlobalInstall(specifier);
-            console.log(`Installed ${depName} globally from GitHub: ${depConfig.github}#${ref}`);
+            console.log(`Installed ${depName} globally from GitHub: ${specifier}`);
             return;
         }
         const projectRoot = findProjectRoot();
@@ -1695,8 +2012,15 @@ alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
 alias pdgi='pds -g init'  # global init
 alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
 alias pdi='pds init'   # init
+alias pdid='pds init -D'  # init as devDependency
 alias pdsi='pds init'  # init (alt)
-alias pdl='pds l'      # local
+alias pdl='pds ls'     # list
+alias pdla='pds ls -a' # list all (project + global)
+alias pdlv='pds ls -v'    # list with versions
+alias pdlav='pds ls -av'  # list all with versions
+alias pdav='pds ls -av'   # list all with versions (alt)
+alias pdgv='pds -g ls -v' # global list with versions
+alias pdsl='pds l'     # local
 alias pdgh='pds gh'    # github
 alias pdgl='pds gl'    # gitlab
 alias pdsn='pds n'     # npm
@@ -1747,7 +2071,7 @@ if (process.argv.length <= 2 || hasOnlyGlobalFlag) {
     }
 }
 try {
-    program.parse();
+    await program.parseAsync();
 }
 catch (err) {
     if (err instanceof Error) {
