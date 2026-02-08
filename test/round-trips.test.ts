@@ -456,6 +456,68 @@ describe('pds round-trips', () => {
     })
   })
 
+  describe('monorepo subdir support', () => {
+    it('includes subdir in github specifier', () => {
+      // Set up config with subdir field
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      writeJson(configPath, {
+        dependencies: {
+          '@test/mock-dep': {
+            localPath: '../mock-dep',
+            github: 'test-org/mock-dep',
+            npm: '@test/mock-dep',
+            distBranch: 'dist',
+            subdir: '/packages/mock-dep',
+          },
+        },
+      })
+
+      run('github mock-dep -R main -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
+        'github:test-org/mock-dep#main&path:/packages/mock-dep'
+      )
+    })
+
+    it('preserves subdir through local → github round-trip', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      writeJson(configPath, {
+        dependencies: {
+          '@test/mock-dep': {
+            localPath: '../mock-dep',
+            github: 'test-org/mock-dep',
+            npm: '@test/mock-dep',
+            distBranch: 'dist',
+            subdir: '/packages/mock-dep',
+          },
+        },
+      })
+
+      run('local mock-dep -I')
+      run('github mock-dep -R main -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
+        'github:test-org/mock-dep#main&path:/packages/mock-dep'
+      )
+
+      // Subdir should still be in config
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { subdir?: string }>)['@test/mock-dep']
+      expect(dep.subdir).toBe('/packages/mock-dep')
+    })
+
+    it('omits subdir path when not configured', () => {
+      run('github mock-dep -R main -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
+        'github:test-org/mock-dep#main'
+      )
+    })
+  })
+
   describe('deinit command', () => {
     it('removes dependency from config', () => {
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
