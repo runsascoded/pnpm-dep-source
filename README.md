@@ -118,9 +118,16 @@ pds s                # Alias
 ```bash
 pds         # defaults to list
 pds list    # or pds ls
-pds ls -v   # include available remote versions
+pds ls -a   # show both project and global dependencies
+pds ls -v   # include available remote versions (npm, GitHub/GitLab dist SHA + version)
+pds ls -av  # combined: all deps, verbose
 pds versions  # or pds v (alias for ls -v)
 ```
+
+The active source is highlighted with a green label (or `>` prefix in non-TTY mode). Verbose mode shows:
+- Local git info (short SHA, dirty indicator)
+- `[dev]` indicator for devDependencies
+- Remote dist branch SHA and version (for at-a-glance staleness checks)
 
 ### Update dependency fields
 
@@ -151,6 +158,22 @@ pds -g rm           # Remove global dep
 
 This removes the dependency from both `.pnpm-dep-source.json` and `package.json`, then runs `pnpm install`.
 
+### Monorepo subdir support
+
+For dependencies that live in a subdirectory of a monorepo, `pds init` auto-detects the subdirectory relative to the git root:
+
+```bash
+pds init ../../slidev/packages/slidev    # detects subdir: /packages/slidev
+```
+
+When switching to GitHub, the specifier uses pnpm's `&path:` syntax:
+
+```
+github:user/repo#sha&path:/packages/slidev
+```
+
+The `subdir` field is stored in `.pnpm-dep-source.json` and can also be set manually via the config.
+
 ### Pre-commit hooks
 
 Prevent accidentally committing with local dependencies:
@@ -176,6 +199,14 @@ pds check            # Exits non-zero if any deps are local
 pds check -q         # Quiet mode (exit code only)
 ```
 
+### Shell aliases
+
+```bash
+eval "$(pds shell-integration)"   # Add to .bashrc/.zshrc
+```
+
+Provides aliases like `pdl` (list), `pdla` (list all), `pdlv` (list verbose), `pdgh` (github), `pdgl` (gitlab), `pdsn` (npm), `pdg` (global mode), etc. Run `pds shell-integration` to see the full list.
+
 ### Show pds info
 
 ```bash
@@ -194,12 +225,15 @@ The tool stores configuration in `.pnpm-dep-source.json`:
       "github": "user/repo",
       "gitlab": "user/repo",
       "npm": "@scope/package-name",
-      "distBranch": "dist"
+      "distBranch": "dist",
+      "subdir": "/packages/client"
     }
   },
   "skipCheck": false
 }
 ```
+
+The `subdir` field is optional and auto-detected during `init` for monorepo packages.
 
 Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 
@@ -211,6 +245,7 @@ Set `"skipCheck": true` to disable the pre-commit hook check for this project.
 
 ### Command options
 
+- `-a, --all`: Show both project and global dependencies (for `list`)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
 - `-D, --dev`: Add as devDependency (for `init` when adding to package.json)
 - `-f, --force`: Suppress mismatch warnings in `init`
