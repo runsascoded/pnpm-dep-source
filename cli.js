@@ -380,7 +380,7 @@ function displayDep(info, verbose = false, remoteVersions) {
     const active = info.sourceType;
     const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined;
     function line(label, isActive, value, suffix = '') {
-        const prefix = !isTTY && isActive ? '> ' : '  ';
+        const prefix = isActive ? '* ' : '  ';
         const coloredLabel = isActive ? `${c.green}${label}${c.reset}` : label;
         console.log(`${prefix}${coloredLabel}: ${value}${suffix}`);
     }
@@ -405,6 +405,9 @@ function displayDep(info, verbose = false, remoteVersions) {
     }
     if (info.config.npm) {
         const isActive = active === 'npm';
+        // In verbose mode, omit NPM line if no published version exists and npm isn't the active source
+        if (verbose && !isActive && !versions?.npm)
+            return;
         const activeSuffix = isActive ? formatActiveSuffix(info) : '';
         const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm})${c.reset}` : '';
         line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix);
@@ -413,13 +416,10 @@ function displayDep(info, verbose = false, remoteVersions) {
 function buildGlobalDepInfo(name, dep) {
     const installSource = getGlobalInstallSource(name);
     let sourceType = 'unknown';
-    let gitInfo = null;
     if (installSource) {
         sourceType = getSourceType(installSource.source);
-        if (sourceType === 'local' && dep.localPath) {
-            gitInfo = getLocalGitInfo(dep.localPath);
-        }
     }
+    const gitInfo = dep.localPath ? getLocalGitInfo(dep.localPath) : null;
     return {
         name,
         currentSource: installSource?.source ?? '(not installed)',
@@ -435,14 +435,8 @@ function buildProjectDepInfo(name, dep, projectRoot, pkg) {
     const sourceType = getSourceType(currentSource);
     const devDeps = pkg.devDependencies;
     const isDev = !!(devDeps && name in devDeps);
-    let version;
-    let gitInfo = null;
-    if (sourceType === 'local' && dep.localPath) {
-        gitInfo = getLocalGitInfo(resolve(projectRoot, dep.localPath));
-    }
-    else {
-        version = getInstalledVersion(projectRoot, name) ?? undefined;
-    }
+    const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
+    const gitInfo = dep.localPath ? getLocalGitInfo(resolve(projectRoot, dep.localPath)) : null;
     return {
         name,
         currentSource,
@@ -456,13 +450,10 @@ function buildProjectDepInfo(name, dep, projectRoot, pkg) {
 async function buildGlobalDepInfoAsync(name, dep, globalSources) {
     const installSource = globalSources.get(name) ?? null;
     let sourceType = 'unknown';
-    let gitInfo = null;
     if (installSource) {
         sourceType = getSourceType(installSource.source);
-        if (sourceType === 'local' && dep.localPath) {
-            gitInfo = await getLocalGitInfoAsync(dep.localPath);
-        }
     }
+    const gitInfo = dep.localPath ? await getLocalGitInfoAsync(dep.localPath) : null;
     return {
         name,
         currentSource: installSource?.source ?? '(not installed)',
@@ -478,14 +469,8 @@ async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
     const sourceType = getSourceType(currentSource);
     const devDeps = pkg.devDependencies;
     const isDev = !!(devDeps && name in devDeps);
-    let version;
-    let gitInfo = null;
-    if (sourceType === 'local' && dep.localPath) {
-        gitInfo = await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath));
-    }
-    else {
-        version = getInstalledVersion(projectRoot, name) ?? undefined;
-    }
+    const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
+    const gitInfo = dep.localPath ? await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath)) : null;
     return {
         name,
         currentSource,
@@ -1345,8 +1330,10 @@ async function listDepsAsync(verbose, all) {
                 ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
                 : Promise.resolve([]),
         ]);
-        for (let i = 0; i < infos.length; i++) {
-            displayDep(infos[i], verbose, remoteVersions[i]);
+        const indexed = infos.map((info, i) => ({ info, versions: remoteVersions[i] }));
+        indexed.sort((a, b) => a.info.name.localeCompare(b.info.name));
+        for (const { info, versions } of indexed) {
+            displayDep(info, verbose, versions);
         }
         return;
     }
@@ -1382,12 +1369,14 @@ async function listDepsAsync(verbose, all) {
             ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
             : Promise.resolve([]),
     ]);
-    // Print in order after all data collected
-    for (let i = 0; i < projectInfos.length; i++) {
-        displayDep(projectInfos[i], verbose, projectVersions[i]);
-    }
-    for (let i = 0; i < globalInfos.length; i++) {
-        displayDep(globalInfos[i], verbose, globalVersions[i]);
+    // Combine, alpha-sort, and display
+    const allDeps = [
+        ...projectInfos.map((info, i) => ({ info, versions: projectVersions[i] })),
+        ...globalInfos.map((info, i) => ({ info, versions: globalVersions[i] })),
+    ];
+    allDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
+    for (const { info, versions } of allDeps) {
+        displayDep(info, verbose, versions);
     }
 }
 program
@@ -2032,6 +2021,7 @@ const SHELL_ALIASES = `# pds shell aliases
 # Add to your shell rc file: eval "$(pds shell-integration)"
 
 alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
+alias pdgg='pds -g g'     # global git (auto-detect GitHub/GitLab)
 alias pdgi='pds -g init'  # global init
 alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
 alias pdi='pds init'   # init

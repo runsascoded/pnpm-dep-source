@@ -1,6 +1,6 @@
 {
   "name": "pnpm-dep-source",
-  "version": "0.4.0-dist.b7efc24",
+  "version": "0.4.0-dist.040ed85",
   "description": "CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources",
   "type": "module",
   "bin": {
@@ -25,7 +25,8 @@
     "url": "https://github.com/runsascoded/pnpm-dep-source/issues"
   },
   "dependencies": {
-    "commander": "^13.0.0"
+    "commander": "^13.0.0",
+    "magicast": "^0.5.2"
   },
   "exports": {}
 }
