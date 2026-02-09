@@ -470,7 +470,7 @@ function displayDep(
   const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined
 
   function line(label: string, isActive: boolean, value: string, suffix: string = ''): void {
-    const prefix = !isTTY && isActive ? '> ' : '  '
+    const prefix = isActive ? '* ' : '  '
     const coloredLabel = isActive ? `${c.green}${label}${c.reset}` : label
     console.log(`${prefix}${coloredLabel}: ${value}${suffix}`)
   }
@@ -496,6 +496,8 @@ function displayDep(
   }
   if (info.config.npm) {
     const isActive = active === 'npm'
+    // In verbose mode, omit NPM line if no published version exists and npm isn't the active source
+    if (verbose && !isActive && !versions?.npm) return
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
     const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm})${c.reset}` : ''
     line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix)
@@ -505,14 +507,11 @@ function displayDep(
 function buildGlobalDepInfo(name: string, dep: DepConfig): DepDisplayInfo {
   const installSource = getGlobalInstallSource(name)
   let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
-  let gitInfo: { sha: string; dirty: boolean } | null = null
 
   if (installSource) {
     sourceType = getSourceType(installSource.source)
-    if (sourceType === 'local' && dep.localPath) {
-      gitInfo = getLocalGitInfo(dep.localPath)
-    }
   }
+  const gitInfo = dep.localPath ? getLocalGitInfo(dep.localPath) : null
 
   return {
     name,
@@ -536,14 +535,8 @@ function buildProjectDepInfo(
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
   const isDev = !!(devDeps && name in devDeps)
 
-  let version: string | undefined
-  let gitInfo: { sha: string; dirty: boolean } | null = null
-
-  if (sourceType === 'local' && dep.localPath) {
-    gitInfo = getLocalGitInfo(resolve(projectRoot, dep.localPath))
-  } else {
-    version = getInstalledVersion(projectRoot, name) ?? undefined
-  }
+  const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined
+  const gitInfo = dep.localPath ? getLocalGitInfo(resolve(projectRoot, dep.localPath)) : null
 
   return {
     name,
@@ -563,14 +556,11 @@ async function buildGlobalDepInfoAsync(
 ): Promise<DepDisplayInfo> {
   const installSource = globalSources.get(name) ?? null
   let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
-  let gitInfo: { sha: string; dirty: boolean } | null = null
 
   if (installSource) {
     sourceType = getSourceType(installSource.source)
-    if (sourceType === 'local' && dep.localPath) {
-      gitInfo = await getLocalGitInfoAsync(dep.localPath)
-    }
   }
+  const gitInfo = dep.localPath ? await getLocalGitInfoAsync(dep.localPath) : null
 
   return {
     name,
@@ -594,14 +584,8 @@ async function buildProjectDepInfoAsync(
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
   const isDev = !!(devDeps && name in devDeps)
 
-  let version: string | undefined
-  let gitInfo: { sha: string; dirty: boolean } | null = null
-
-  if (sourceType === 'local' && dep.localPath) {
-    gitInfo = await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath))
-  } else {
-    version = getInstalledVersion(projectRoot, name) ?? undefined
-  }
+  const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined
+  const gitInfo = dep.localPath ? await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath)) : null
 
   return {
     name,
@@ -1560,8 +1544,10 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
         : Promise.resolve([] as RemoteVersions[]),
     ])
 
-    for (let i = 0; i < infos.length; i++) {
-      displayDep(infos[i], verbose, remoteVersions[i])
+    const indexed = infos.map((info, i) => ({ info, versions: remoteVersions[i] }))
+    indexed.sort((a, b) => a.info.name.localeCompare(b.info.name))
+    for (const { info, versions } of indexed) {
+      displayDep(info, verbose, versions)
     }
     return
   }
@@ -1605,12 +1591,14 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
       : Promise.resolve([] as RemoteVersions[]),
   ])
 
-  // Print in order after all data collected
-  for (let i = 0; i < projectInfos.length; i++) {
-    displayDep(projectInfos[i], verbose, projectVersions[i])
-  }
-  for (let i = 0; i < globalInfos.length; i++) {
-    displayDep(globalInfos[i], verbose, globalVersions[i])
+  // Combine, alpha-sort, and display
+  const allDeps = [
+    ...projectInfos.map((info, i) => ({ info, versions: projectVersions[i] })),
+    ...globalInfos.map((info, i) => ({ info, versions: globalVersions[i] })),
+  ]
+  allDeps.sort((a, b) => a.info.name.localeCompare(b.info.name))
+  for (const { info, versions } of allDeps) {
+    displayDep(info, verbose, versions)
   }
 }
 
