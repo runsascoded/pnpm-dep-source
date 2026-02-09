@@ -2337,6 +2337,7 @@ const SHELL_ALIASES = `# pds shell aliases
 # Add to your shell rc file: eval "$(pds shell-integration)"
 
 alias pdg='pds -g'     # global mode (pdg ls, pdg gh, etc.)
+alias pdgg='pds -g g'     # global git (auto-detect GitHub/GitLab)
 alias pdgi='pds -g init'  # global init
 alias pdsg='pds g'     # git (auto-detect GitHub/GitLab)
 alias pdi='pds init'   # init
