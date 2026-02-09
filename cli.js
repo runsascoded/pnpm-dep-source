@@ -415,10 +415,7 @@ function displayDep(info, verbose = false, remoteVersions) {
 }
 function buildGlobalDepInfo(name, dep) {
     const installSource = getGlobalInstallSource(name);
-    let sourceType = 'unknown';
-    if (installSource) {
-        sourceType = getSourceType(installSource.source);
-    }
+    const sourceType = installSource?.source ?? 'unknown';
     const gitInfo = dep.localPath ? getLocalGitInfo(dep.localPath) : null;
     return {
         name,
@@ -449,10 +446,7 @@ function buildProjectDepInfo(name, dep, projectRoot, pkg) {
 }
 async function buildGlobalDepInfoAsync(name, dep, globalSources) {
     const installSource = globalSources.get(name) ?? null;
-    let sourceType = 'unknown';
-    if (installSource) {
-        sourceType = getSourceType(installSource.source);
-    }
+    const sourceType = installSource?.source ?? 'unknown';
     const gitInfo = dep.localPath ? await getLocalGitInfoAsync(dep.localPath) : null;
     return {
         name,
