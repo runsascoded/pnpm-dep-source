@@ -506,11 +506,7 @@ function displayDep(
 
 function buildGlobalDepInfo(name: string, dep: DepConfig): DepDisplayInfo {
   const installSource = getGlobalInstallSource(name)
-  let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
-
-  if (installSource) {
-    sourceType = getSourceType(installSource.source)
-  }
+  const sourceType: DepDisplayInfo['sourceType'] = (installSource?.source as DepDisplayInfo['sourceType']) ?? 'unknown'
   const gitInfo = dep.localPath ? getLocalGitInfo(dep.localPath) : null
 
   return {
@@ -555,11 +551,7 @@ async function buildGlobalDepInfoAsync(
   globalSources: Map<string, { source: string; specifier: string }>,
 ): Promise<DepDisplayInfo> {
   const installSource = globalSources.get(name) ?? null
-  let sourceType: DepDisplayInfo['sourceType'] = 'unknown'
-
-  if (installSource) {
-    sourceType = getSourceType(installSource.source)
-  }
+  const sourceType: DepDisplayInfo['sourceType'] = (installSource?.source as DepDisplayInfo['sourceType']) ?? 'unknown'
   const gitInfo = dep.localPath ? await getLocalGitInfoAsync(dep.localPath) : null
 
   return {
