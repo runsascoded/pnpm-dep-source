@@ -71,11 +71,16 @@ const JS_PROJECT_SUBDIRS = ['www', 'web', 'app', 'frontend', 'client', 'packages
 // Find project root (directory containing package.json)
 function findProjectRoot(startDir: string = process.cwd()): string {
   let dir = startDir
+  let foundGit = false
   while (dir !== dirname(dir)) {
+    if (existsSync(join(dir, '.git'))) foundGit = true
     if (existsSync(join(dir, 'package.json'))) {
       return dir
     }
-    dir = dirname(dir)
+    const parent = dirname(dir)
+    // Don't walk past git repo boundary into a parent git repo
+    if (foundGit && parent !== dir && existsSync(join(parent, '.git'))) break
+    dir = parent
   }
 
   // No package.json found - look for JS projects in subdirectories and provide helpful error
@@ -470,7 +475,7 @@ function displayDep(
   const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined
 
   function line(label: string, isActive: boolean, value: string, suffix: string = ''): void {
-    const prefix = isActive ? '* ' : '  '
+    const prefix = isActive ? `${c.green}*${c.reset} ` : '  '
     const coloredLabel = isActive ? `${c.green}${label}${c.reset}` : label
     console.log(`${prefix}${coloredLabel}: ${value}${suffix}`)
   }
@@ -483,16 +488,26 @@ function displayDep(
     const isActive = active === 'github'
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
     const distParts = [versions?.github, versions?.githubVersion].filter(Boolean)
-    const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
     const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : ''
-    line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix)
+    if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p as string))) {
+      line('GitHub', true, info.config.github + subdirSuffix, activeSuffix)
+      console.log(`      ${c.blue}dist: ${distParts.join('; ')}${c.reset}`)
+    } else {
+      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
+      line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix)
+    }
   }
   if (info.config.gitlab) {
     const isActive = active === 'gitlab'
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
     const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean)
-    const distSuffix = distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
-    line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix)
+    if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p as string))) {
+      line('GitLab', true, info.config.gitlab, activeSuffix)
+      console.log(`      ${c.blue}dist: ${distParts.join('; ')}${c.reset}`)
+    } else {
+      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
+      line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix)
+    }
   }
   if (info.config.npm) {
     const isActive = active === 'npm'
