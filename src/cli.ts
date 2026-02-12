@@ -491,9 +491,9 @@ function displayDep(
     const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : ''
     if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p as string))) {
       line('GitHub', true, info.config.github + subdirSuffix, activeSuffix)
-      console.log(`      ${c.blue}dist: ${distParts.join('; ')}${c.reset}`)
+      console.log(`      ${c.blue}dist@${distParts.join('; ')}${c.reset}`)
     } else {
-      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
+      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}` : ''
       line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix)
     }
   }
@@ -503,9 +503,9 @@ function displayDep(
     const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean)
     if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p as string))) {
       line('GitLab', true, info.config.gitlab, activeSuffix)
-      console.log(`      ${c.blue}dist: ${distParts.join('; ')}${c.reset}`)
+      console.log(`      ${c.blue}dist@${distParts.join('; ')}${c.reset}`)
     } else {
-      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist: ${distParts.join('; ')})${c.reset}` : ''
+      const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}` : ''
       line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix)
     }
   }
