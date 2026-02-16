@@ -2364,6 +2364,7 @@ alias pdl='pds ls'     # list
 alias pdla='pds ls -a' # list all (project + global)
 alias pdlv='pds ls -v'    # list with versions
 alias pdlav='pds ls -av'  # list all with versions
+alias pdlg='pds -g ls'   # global list
 alias pdav='pds ls -av'   # list all with versions (alt)
 alias pdgv='pds -g ls -v' # global list with versions
 alias pdsl='pds l'     # local
