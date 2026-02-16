@@ -28,7 +28,15 @@ function findOwnPackageJson(): string {
 const pkgJson = JSON.parse(readFileSync(findOwnPackageJson(), 'utf-8'))
 const VERSION = pkgJson.version as string
 
-const CONFIG_FILE = '.pnpm-dep-source.json'
+const CONFIG_FILES = ['.pds.json', '.pnpm-dep-source.json']
+
+function resolveConfigPath(projectRoot: string): string {
+  for (const f of CONFIG_FILES) {
+    const p = join(projectRoot, f)
+    if (existsSync(p)) return p
+  }
+  return join(projectRoot, CONFIG_FILES[0])
+}
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source')
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json')
 
@@ -117,7 +125,7 @@ function findProjectRoot(startDir: string = process.cwd()): string {
 }
 
 function loadConfig(projectRoot: string): Config {
-  const configPath = join(projectRoot, CONFIG_FILE)
+  const configPath = resolveConfigPath(projectRoot)
   if (!existsSync(configPath)) {
     return { dependencies: {} }
   }
@@ -125,7 +133,7 @@ function loadConfig(projectRoot: string): Config {
 }
 
 function saveConfig(projectRoot: string, config: Config): void {
-  const configPath = join(projectRoot, CONFIG_FILE)
+  const configPath = resolveConfigPath(projectRoot)
   writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n')
 }
 
@@ -2091,7 +2099,7 @@ const GLOBAL_HOOKS_DIR = join(GLOBAL_CONFIG_DIR, 'hooks')
 
 // Check if any pds-managed deps are set to local (workspace:*)
 function checkLocalDeps(projectRoot: string): { name: string; source: string }[] {
-  const configPath = join(projectRoot, CONFIG_FILE)
+  const configPath = resolveConfigPath(projectRoot)
   if (!existsSync(configPath)) {
     return [] // No pds config, nothing to check
   }
