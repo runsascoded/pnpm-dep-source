@@ -957,11 +957,12 @@ async function getLatestNpmVersionAsync(packageName: string): Promise<string> {
 let globalInstallCache: Map<string, { source: string; specifier: string }> | null = null
 
 function parseGlobalPkgSource(
-  pkg: { version?: string; resolved?: string },
+  pkg: { version?: string; resolved?: string; path?: string },
   globalDir: string,
 ): { source: string; specifier: string } | null {
   const version = pkg.version || ''
   const resolved = pkg.resolved || ''
+  const pkgPath = pkg.path || ''
 
   // Local file install: version is "file:..." path
   if (version.startsWith('file:')) {
@@ -970,13 +971,14 @@ function parseGlobalPkgSource(
     return { source: 'local', specifier: absPath }
   }
 
-  // Check resolved URL for source detection
-  if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
-    const shaMatch = resolved.match(/([a-f0-9]{40})/)
+  // Check resolved URL and install path for source detection
+  const resolvedOrPath = resolved || pkgPath
+  if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
+    const shaMatch = resolvedOrPath.match(/([a-f0-9]{40})/)
     const sha = shaMatch ? shaMatch[1].slice(0, 7) : ''
     return { source: 'github', specifier: `${sha}; ${version}` }
-  } else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
-    const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//)
+  } else if (resolvedOrPath.includes('gitlab.com') && (resolved.includes('/-/archive/') || pkgPath.includes('gitlab.com'))) {
+    const refMatch = resolvedOrPath.match(/\/-\/archive\/([^/]+)\//) ?? resolvedOrPath.match(/([a-f0-9]{40})/)
     const ref = refMatch ? refMatch[1].slice(0, 7) : ''
     return { source: 'gitlab', specifier: `${ref}; ${version}` }
   } else if (version) {
@@ -999,7 +1001,7 @@ function fetchAllGlobalInstallSources(): Map<string, { source: string; specifier
     const globalDir = data[0]?.path || ''
     const deps = data[0]?.dependencies ?? {}
     for (const [name, pkg] of Object.entries(deps)) {
-      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string }, globalDir)
+      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string; path?: string }, globalDir)
       if (source) {
         globalInstallCache.set(name, source)
       }
@@ -1019,7 +1021,7 @@ async function fetchAllGlobalInstallSourcesAsync(): Promise<Map<string, { source
     const globalDir = data[0]?.path || ''
     const deps = data[0]?.dependencies ?? {}
     for (const [name, pkg] of Object.entries(deps)) {
-      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string }, globalDir)
+      const source = parseGlobalPkgSource(pkg as { version?: string; resolved?: string; path?: string }, globalDir)
       if (source) {
         map.set(name, source)
       }
