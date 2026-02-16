@@ -353,7 +353,7 @@ function formatGitInfo(info) {
 function getSourceType(source) {
     if (source === 'workspace:*' || source === 'local')
         return 'local';
-    if (source.startsWith('github:'))
+    if (source.startsWith('github:') || source.includes('github.com/'))
         return 'github';
     if (source.includes('gitlab.com') && source.includes('/-/archive/'))
         return 'gitlab';
@@ -902,13 +902,13 @@ function switchToLocal(projectRoot, depName, localPath) {
     updateViteConfig(projectRoot, depName, true);
     console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`);
 }
-// Generate GitHub specifier, using git+https URL for monorepo subdirectories
+// Generate GitHub specifier using HTTPS tarball URL (avoids SSH auth issues in CI)
 function makeGitHubSpecifier(repo, ref, subdir) {
     if (subdir) {
         // pnpm git subdirectory syntax: #ref&path:/subdir
-        return `github:${repo}#${ref}&path:${subdir}`;
+        return `https://github.com/${repo}#${ref}&path:${subdir}`;
     }
-    return `github:${repo}#${ref}`;
+    return `https://github.com/${repo}#${ref}`;
 }
 // Helper to switch a dependency to GitHub mode
 function switchToGitHub(projectRoot, depName, depConfig, ref) {
@@ -1744,15 +1744,7 @@ program
         : Object.entries(config.dependencies);
     for (const [name] of deps) {
         const current = getCurrentSource(pkg, name);
-        let sourceType = 'unknown';
-        if (current === 'workspace:*')
-            sourceType = 'local';
-        else if (current.startsWith('github:'))
-            sourceType = 'github';
-        else if (current.includes('gitlab.com') && current.includes('/-/archive/'))
-            sourceType = 'gitlab';
-        else if (current.match(/^\^?\d|^latest/))
-            sourceType = 'npm';
+        const sourceType = getSourceType(current);
         console.log(`${name}: ${sourceType} (${current})`);
     }
 });
