@@ -24,7 +24,15 @@ function findOwnPackageJson() {
 }
 const pkgJson = JSON.parse(readFileSync(findOwnPackageJson(), 'utf-8'));
 const VERSION = pkgJson.version;
-const CONFIG_FILE = '.pnpm-dep-source.json';
+const CONFIG_FILES = ['.pds.json', '.pnpm-dep-source.json'];
+function resolveConfigPath(projectRoot) {
+    for (const f of CONFIG_FILES) {
+        const p = join(projectRoot, f);
+        if (existsSync(p))
+            return p;
+    }
+    return join(projectRoot, CONFIG_FILES[0]);
+}
 const GLOBAL_CONFIG_DIR = join(homedir(), '.config', 'pnpm-dep-source');
 const GLOBAL_CONFIG_FILE = join(GLOBAL_CONFIG_DIR, 'config.json');
 function spawnAsync(cmd, args, opts) {
@@ -89,14 +97,14 @@ function findProjectRoot(startDir = process.cwd()) {
     throw new Error(message);
 }
 function loadConfig(projectRoot) {
-    const configPath = join(projectRoot, CONFIG_FILE);
+    const configPath = resolveConfigPath(projectRoot);
     if (!existsSync(configPath)) {
         return { dependencies: {} };
     }
     return JSON.parse(readFileSync(configPath, 'utf-8'));
 }
 function saveConfig(projectRoot, config) {
-    const configPath = join(projectRoot, CONFIG_FILE);
+    const configPath = resolveConfigPath(projectRoot);
     writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
 }
 function loadGlobalConfig() {
@@ -802,20 +810,22 @@ let globalInstallCache = null;
 function parseGlobalPkgSource(pkg, globalDir) {
     const version = pkg.version || '';
     const resolved = pkg.resolved || '';
+    const pkgPath = pkg.path || '';
     // Local file install: version is "file:..." path
     if (version.startsWith('file:')) {
         const filePath = version.slice(5);
         const absPath = globalDir ? resolve(globalDir, filePath) : filePath;
         return { source: 'local', specifier: absPath };
     }
-    // Check resolved URL for source detection
-    if (resolved.includes('codeload.github.com') || resolved.includes('github.com')) {
-        const shaMatch = resolved.match(/([a-f0-9]{40})/);
+    // Check resolved URL and install path for source detection
+    const resolvedOrPath = resolved || pkgPath;
+    if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
+        const shaMatch = resolvedOrPath.match(/([a-f0-9]{40})/);
         const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
         return { source: 'github', specifier: `${sha}; ${version}` };
     }
-    else if (resolved.includes('gitlab.com') && resolved.includes('/-/archive/')) {
-        const refMatch = resolved.match(/\/-\/archive\/([^/]+)\//);
+    else if (resolvedOrPath.includes('gitlab.com') && (resolved.includes('/-/archive/') || pkgPath.includes('gitlab.com'))) {
+        const refMatch = resolvedOrPath.match(/\/-\/archive\/([^/]+)\//) ?? resolvedOrPath.match(/([a-f0-9]{40})/);
         const ref = refMatch ? refMatch[1].slice(0, 7) : '';
         return { source: 'gitlab', specifier: `${ref}; ${version}` };
     }
@@ -1813,7 +1823,7 @@ program
 const GLOBAL_HOOKS_DIR = join(GLOBAL_CONFIG_DIR, 'hooks');
 // Check if any pds-managed deps are set to local (workspace:*)
 function checkLocalDeps(projectRoot) {
-    const configPath = join(projectRoot, CONFIG_FILE);
+    const configPath = resolveConfigPath(projectRoot);
     if (!existsSync(configPath)) {
         return []; // No pds config, nothing to check
     }
@@ -2044,6 +2054,7 @@ alias pdl='pds ls'     # list
 alias pdla='pds ls -a' # list all (project + global)
 alias pdlv='pds ls -v'    # list with versions
 alias pdlav='pds ls -av'  # list all with versions
+alias pdlg='pds -g ls'   # global list
 alias pdav='pds ls -av'   # list all with versions (alt)
 alias pdgv='pds -g ls -v' # global list with versions
 alias pdsl='pds l'     # local
