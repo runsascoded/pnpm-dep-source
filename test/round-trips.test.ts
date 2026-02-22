@@ -566,3 +566,197 @@ describe('pds round-trips', () => {
     })
   })
 })
+
+// Workspace-aware (monorepo sub-package) tests
+const MONOREPO_DIR = join(__dirname, 'fixtures', 'test-monorepo')
+const SUBPKG_DIR = join(MONOREPO_DIR, 'packages', 'app')
+const MONOREPO_DEP_DIR = join(__dirname, 'fixtures', 'monorepo-dep')
+
+function runInSubpkg(cmd: string): string {
+  return execSync(`node ${CLI_PATH} ${cmd}`, { cwd: SUBPKG_DIR, encoding: 'utf-8' })
+}
+
+function setupMonorepo(): void {
+  if (existsSync(MONOREPO_DIR)) {
+    rmSync(MONOREPO_DIR, { recursive: true })
+  }
+  if (existsSync(MONOREPO_DEP_DIR)) {
+    rmSync(MONOREPO_DEP_DIR, { recursive: true })
+  }
+
+  // Create workspace root with pnpm-workspace.yaml
+  mkdirSync(SUBPKG_DIR, { recursive: true })
+  writeJson(join(MONOREPO_DIR, 'package.json'), {
+    name: 'test-monorepo',
+    version: '1.0.0',
+    private: true,
+  })
+  writeFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n')
+
+  // Create sub-package
+  writeJson(join(SUBPKG_DIR, 'package.json'), {
+    name: '@test/app',
+    version: '1.0.0',
+    dependencies: {
+      '@test/monorepo-dep': '^1.0.0',
+    },
+  })
+  writeJson(join(SUBPKG_DIR, '.pds.json'), {
+    dependencies: {
+      '@test/monorepo-dep': {
+        localPath: '../../../monorepo-dep',
+        github: 'test-org/monorepo-dep',
+        npm: '@test/monorepo-dep',
+        distBranch: 'dist',
+      },
+    },
+  })
+
+  // Create mock dep outside monorepo
+  mkdirSync(MONOREPO_DEP_DIR, { recursive: true })
+  writeJson(join(MONOREPO_DEP_DIR, 'package.json'), {
+    name: '@test/monorepo-dep',
+    version: '1.0.0',
+  })
+}
+
+describe('pds workspace-aware (monorepo)', () => {
+  beforeEach(() => {
+    setupMonorepo()
+  })
+
+  afterEach(() => {
+    if (existsSync(MONOREPO_DIR)) {
+      rmSync(MONOREPO_DIR, { recursive: true })
+    }
+    if (existsSync(MONOREPO_DEP_DIR)) {
+      rmSync(MONOREPO_DEP_DIR, { recursive: true })
+    }
+  })
+
+  describe('local mode in sub-package', () => {
+    it('modifies workspace yaml at monorepo root, not sub-package', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      // pnpm-workspace.yaml should NOT exist in sub-package
+      expect(existsSync(join(SUBPKG_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+
+      // workspace yaml at monorepo root should contain the dep path (relative to root)
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      // localPath in .pds.json is ../../../monorepo-dep (relative to sub-package)
+      // In workspace yaml it should be relative to monorepo root: ../monorepo-dep
+      expect(wsContent).toContain('../monorepo-dep')
+    })
+
+    it('sets workspace:* in sub-package package.json', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      const pkg = readJson(join(SUBPKG_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/monorepo-dep']).toBe('workspace:*')
+    })
+
+    it('preserves existing packages entries in workspace yaml', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      // Should still have the original packages/* entry
+      expect(wsContent).toContain('packages/*')
+      // Should also have the dep path
+      expect(wsContent).toContain('../monorepo-dep')
+    })
+
+    it('does not add "." to workspace yaml packages', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      // Should NOT contain a bare "." entry (that's for non-monorepo mode)
+      const lines = wsContent.split('\n').map(l => l.trim())
+      expect(lines).not.toContain('- .')
+    })
+  })
+
+  describe('local → github round-trip in sub-package', () => {
+    it('removes dep from workspace yaml without deleting the file', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      const wsContentBefore = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      expect(wsContentBefore).toContain('../monorepo-dep')
+
+      runInSubpkg('github monorepo-dep -R main -I')
+
+      // Workspace yaml should still exist (belongs to monorepo)
+      expect(existsSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'))).toBe(true)
+
+      // But dep path should be removed
+      const wsContentAfter = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      expect(wsContentAfter).not.toContain('../monorepo-dep')
+
+      // Original packages/* entry should be preserved
+      expect(wsContentAfter).toContain('packages/*')
+    })
+
+    it('updates sub-package package.json, not monorepo root', () => {
+      runInSubpkg('github monorepo-dep -R main -I')
+
+      const subPkg = readJson(join(SUBPKG_DIR, 'package.json'))
+      expect((subPkg.dependencies as Record<string, string>)['@test/monorepo-dep']).toContain('github.com/test-org/monorepo-dep')
+
+      // Monorepo root package.json should be unchanged
+      const rootPkg = readJson(join(MONOREPO_DIR, 'package.json'))
+      expect(rootPkg.dependencies).toBeUndefined()
+    })
+  })
+
+  describe('local → npm round-trip in sub-package', () => {
+    it('removes dep from workspace yaml without deleting the file', () => {
+      runInSubpkg('local monorepo-dep -I')
+      expect(readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')).toContain('../monorepo-dep')
+
+      runInSubpkg('npm monorepo-dep 2.0.0 -I')
+
+      expect(existsSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'))).toBe(true)
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      expect(wsContent).not.toContain('../monorepo-dep')
+      expect(wsContent).toContain('packages/*')
+    })
+  })
+
+  describe('deinit in sub-package', () => {
+    it('cleans up workspace yaml at root without deleting it', () => {
+      runInSubpkg('local monorepo-dep -I')
+      expect(readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')).toContain('../monorepo-dep')
+
+      runInSubpkg('deinit monorepo-dep')
+
+      expect(existsSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'))).toBe(true)
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      expect(wsContent).not.toContain('../monorepo-dep')
+      expect(wsContent).toContain('packages/*')
+    })
+
+    it('removes config from sub-package .pds.json', () => {
+      runInSubpkg('deinit monorepo-dep')
+
+      const config = readJson(join(SUBPKG_DIR, '.pds.json'))
+      expect(config.dependencies).toEqual({})
+    })
+  })
+
+  describe('rm in sub-package', () => {
+    it('cleans up workspace yaml at root and removes from sub-package package.json', () => {
+      runInSubpkg('local monorepo-dep -I')
+
+      runInSubpkg('rm monorepo-dep -I')
+
+      // Workspace yaml still exists with original entries
+      expect(existsSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'))).toBe(true)
+      const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
+      expect(wsContent).not.toContain('../monorepo-dep')
+      expect(wsContent).toContain('packages/*')
+
+      // Dep removed from sub-package package.json
+      const pkg = readJson(join(SUBPKG_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/monorepo-dep']).toBeUndefined()
+    })
+  })
+})

@@ -124,6 +124,22 @@ function findProjectRoot(startDir: string = process.cwd()): string {
   throw new Error(message)
 }
 
+// Find workspace root (ancestor directory with pnpm-workspace.yaml above projectRoot)
+function findWorkspaceRoot(projectRoot: string): string | null {
+  let dir = dirname(projectRoot)
+  while (dir !== dirname(dir)) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir
+    dir = dirname(dir)
+  }
+  return null
+}
+
+// Compute the path to put in pnpm-workspace.yaml for a dep's localPath
+function workspaceLocalPath(projectRoot: string, localPath: string, workspaceRoot?: string | null): string {
+  const wsRoot = workspaceRoot ?? projectRoot
+  return relative(wsRoot, resolve(projectRoot, localPath))
+}
+
 function loadConfig(projectRoot: string): Config {
   const configPath = resolveConfigPath(projectRoot)
   if (!existsSync(configPath)) {
@@ -921,10 +937,11 @@ function getLocalPackageName(localPath: string): string {
   return getLocalPackageInfo(localPath).name
 }
 
-function runPnpmInstall(projectRoot: string): void {
+function runPnpmInstall(projectRoot: string, workspaceRoot?: string | null): void {
+  const installDir = workspaceRoot ?? projectRoot
   console.log('Running pnpm install...')
   try {
-    execSync('pnpm install', { cwd: projectRoot, stdio: 'inherit' })
+    execSync('pnpm install', { cwd: installDir, stdio: 'inherit' })
   } catch {
     console.error(`${c.yellow}Warning: pnpm install failed (config changes were saved)${c.reset}`)
   }
@@ -1041,19 +1058,22 @@ function switchToLocal(
   projectRoot: string,
   depName: string,
   localPath: string,
+  workspaceRoot?: string | null,
 ): void {
   const pkg = loadPackageJson(projectRoot)
   updatePackageJsonDep(pkg, depName, 'workspace:*')
   savePackageJson(projectRoot, pkg)
 
   // Update pnpm-workspace.yaml
-  const ws = loadWorkspaceYaml(projectRoot) ?? { packages: ['.'] }
-  if (!ws.packages) ws.packages = ['.']
-  if (!ws.packages.includes('.')) ws.packages.unshift('.')
-  if (!ws.packages.includes(localPath)) {
-    ws.packages.push(localPath)
+  const wsRoot = workspaceRoot ?? projectRoot
+  const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] }
+  if (!ws.packages) ws.packages = workspaceRoot ? [] : ['.']
+  if (!workspaceRoot && !ws.packages.includes('.')) ws.packages.unshift('.')
+  const wsLocalPath = workspaceLocalPath(projectRoot, localPath, workspaceRoot)
+  if (!ws.packages.includes(wsLocalPath)) {
+    ws.packages.push(wsLocalPath)
   }
-  saveWorkspaceYaml(projectRoot, ws)
+  saveWorkspaceYaml(wsRoot, ws)
 
   // Update vite.config.ts
   updateViteConfig(projectRoot, depName, true)
@@ -1076,6 +1096,7 @@ function switchToGitHub(
   depName: string,
   depConfig: DepConfig,
   ref?: string,
+  workspaceRoot?: string | null,
 ): void {
   if (!depConfig.github) {
     throw new Error(`No GitHub repo configured for ${depName}`)
@@ -1092,13 +1113,17 @@ function switchToGitHub(
 
   // Remove from pnpm-workspace.yaml
   if (depConfig.localPath) {
-    const ws = loadWorkspaceYaml(projectRoot)
+    const wsRoot = workspaceRoot ?? projectRoot
+    const ws = loadWorkspaceYaml(wsRoot)
     if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
+      const wsLocalPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+      ws.packages = ws.packages.filter(p => p !== wsLocalPath)
+      if (workspaceRoot) {
+        saveWorkspaceYaml(wsRoot, ws)
+      } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(wsRoot, null)
       } else {
-        saveWorkspaceYaml(projectRoot, ws)
+        saveWorkspaceYaml(wsRoot, ws)
       }
     }
   }
@@ -1115,6 +1140,7 @@ function switchToGitLab(
   depName: string,
   depConfig: DepConfig,
   ref?: string,
+  workspaceRoot?: string | null,
 ): void {
   if (!depConfig.gitlab) {
     throw new Error(`No GitLab repo configured for ${depName}`)
@@ -1134,13 +1160,17 @@ function switchToGitLab(
 
   // Remove from pnpm-workspace.yaml
   if (depConfig.localPath) {
-    const ws = loadWorkspaceYaml(projectRoot)
+    const wsRoot = workspaceRoot ?? projectRoot
+    const ws = loadWorkspaceYaml(wsRoot)
     if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
+      const wsLocalPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+      ws.packages = ws.packages.filter(p => p !== wsLocalPath)
+      if (workspaceRoot) {
+        saveWorkspaceYaml(wsRoot, ws)
+      } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(wsRoot, null)
       } else {
-        saveWorkspaceYaml(projectRoot, ws)
+        saveWorkspaceYaml(wsRoot, ws)
       }
     }
   }
@@ -1246,6 +1276,7 @@ program
     }
 
     const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
     const config = loadConfig(projectRoot)
     const relLocalPath = localPath ? relative(projectRoot, localPath) : undefined
 
@@ -1281,19 +1312,19 @@ program
     }
 
     if (activateSource === 'local' && relLocalPath) {
-      switchToLocal(projectRoot, pkgName, relLocalPath)
+      switchToLocal(projectRoot, pkgName, relLocalPath, workspaceRoot)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     } else if (activateSource === 'github' && github) {
-      switchToGitHub(projectRoot, pkgName, depConfig)
+      switchToGitHub(projectRoot, pkgName, depConfig, undefined, workspaceRoot)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     } else if (activateSource === 'gitlab' && gitlab) {
-      switchToGitLab(projectRoot, pkgName, depConfig)
+      switchToGitLab(projectRoot, pkgName, depConfig, undefined, workspaceRoot)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     } else if (needsAdd) {
       // No activation source but we added the dep - use npm latest
@@ -1304,7 +1335,7 @@ program
       savePackageJson(projectRoot, pkgUpdated)
       console.log(`Set ${pkgName} to npm: ^${latestVersion}`)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     }
   })
@@ -1405,16 +1436,20 @@ function removeDependency(pkg: Record<string, unknown>, depName: string): boolea
 }
 
 // Helper to clean up workspace/vite when removing a dep
-function cleanupDepReferences(projectRoot: string, depName: string, depConfig: DepConfig): void {
+function cleanupDepReferences(projectRoot: string, depName: string, depConfig: DepConfig, workspaceRoot?: string | null): void {
   // Clean up pnpm-workspace.yaml if the dep was in it
   if (depConfig.localPath) {
-    const ws = loadWorkspaceYaml(projectRoot)
+    const wsRoot = workspaceRoot ?? projectRoot
+    const ws = loadWorkspaceYaml(wsRoot)
     if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
+      const wsLocalPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+      ws.packages = ws.packages.filter(p => p !== wsLocalPath)
+      if (workspaceRoot) {
+        saveWorkspaceYaml(wsRoot, ws)
+      } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+        saveWorkspaceYaml(wsRoot, null)
       } else {
-        saveWorkspaceYaml(projectRoot, ws)
+        saveWorkspaceYaml(wsRoot, ws)
       }
     }
   }
@@ -1430,6 +1465,7 @@ program
   .action((depQuery: string | undefined) => {
     const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
+    const workspaceRoot = isGlobal ? null : findWorkspaceRoot(projectRoot)
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
 
     const [name, depConfig] = findMatchingDep(config, depQuery)
@@ -1438,7 +1474,7 @@ program
     delete config.dependencies[name]
 
     if (!isGlobal) {
-      cleanupDepReferences(projectRoot, name, depConfig)
+      cleanupDepReferences(projectRoot, name, depConfig, workspaceRoot)
     }
 
     if (isGlobal) {
@@ -1458,6 +1494,7 @@ program
   .action((depQuery: string | undefined, options: { install: boolean }) => {
     const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
+    const workspaceRoot = isGlobal ? null : findWorkspaceRoot(projectRoot)
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
 
     const [name, depConfig] = findMatchingDep(config, depQuery)
@@ -1472,7 +1509,7 @@ program
       execSync(`pnpm rm -g ${depConfig.npm ?? name}`, { stdio: 'inherit' })
       console.log(`Removed ${name} (global)`)
     } else {
-      cleanupDepReferences(projectRoot, name, depConfig)
+      cleanupDepReferences(projectRoot, name, depConfig, workspaceRoot)
       saveConfig(projectRoot, config)
 
       // Remove from package.json
@@ -1483,7 +1520,7 @@ program
       }
 
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     }
   })
@@ -1642,6 +1679,7 @@ program
     }
 
     const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
     const config = loadConfig(projectRoot)
     const [depName, depConfig] = findMatchingDep(config, depQuery)
 
@@ -1657,13 +1695,15 @@ program
     savePackageJson(projectRoot, pkg)
 
     // Update pnpm-workspace.yaml
-    const ws = loadWorkspaceYaml(projectRoot) ?? { packages: ['.'] }
-    if (!ws.packages) ws.packages = ['.']
-    if (!ws.packages.includes('.')) ws.packages.unshift('.')
-    if (!ws.packages.includes(depConfig.localPath)) {
-      ws.packages.push(depConfig.localPath)
+    const wsRoot = workspaceRoot ?? projectRoot
+    const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] }
+    if (!ws.packages) ws.packages = workspaceRoot ? [] : ['.']
+    if (!workspaceRoot && !ws.packages.includes('.')) ws.packages.unshift('.')
+    const wsLocalPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+    if (!ws.packages.includes(wsLocalPath)) {
+      ws.packages.push(wsLocalPath)
     }
-    saveWorkspaceYaml(projectRoot, ws)
+    saveWorkspaceYaml(wsRoot, ws)
 
     // Update vite.config.ts
     updateViteConfig(projectRoot, depName, true)
@@ -1671,7 +1711,7 @@ program
     console.log(`Switched ${depName} to local: ${absLocalPath}`)
 
     if (options.install) {
-      runPnpmInstall(projectRoot)
+      runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
@@ -1724,6 +1764,7 @@ program
     }
 
     const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, specifier)
@@ -1731,13 +1772,19 @@ program
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
-    const ws = loadWorkspaceYaml(projectRoot)
-    if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
-      } else {
-        saveWorkspaceYaml(projectRoot, ws)
+    if (depConfig.localPath) {
+      const wsRoot = workspaceRoot ?? projectRoot
+      const ws = loadWorkspaceYaml(wsRoot)
+      if (ws?.packages) {
+        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+        ws.packages = ws.packages.filter(p => p !== wsPath)
+        if (workspaceRoot) {
+          saveWorkspaceYaml(wsRoot, ws)
+        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+          saveWorkspaceYaml(wsRoot, null)
+        } else {
+          saveWorkspaceYaml(wsRoot, ws)
+        }
       }
     }
 
@@ -1747,7 +1794,7 @@ program
     console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`)
 
     if (options.install) {
-      runPnpmInstall(projectRoot)
+      runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
@@ -1803,6 +1850,7 @@ program
     }
 
     const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, tarballUrl)
@@ -1810,13 +1858,19 @@ program
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
-    const ws = loadWorkspaceYaml(projectRoot)
-    if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
-      } else {
-        saveWorkspaceYaml(projectRoot, ws)
+    if (depConfig.localPath) {
+      const wsRoot = workspaceRoot ?? projectRoot
+      const ws = loadWorkspaceYaml(wsRoot)
+      if (ws?.packages) {
+        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+        ws.packages = ws.packages.filter(p => p !== wsPath)
+        if (workspaceRoot) {
+          saveWorkspaceYaml(wsRoot, ws)
+        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+          saveWorkspaceYaml(wsRoot, null)
+        } else {
+          saveWorkspaceYaml(wsRoot, ws)
+        }
       }
     }
 
@@ -1826,7 +1880,7 @@ program
     console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
 
     if (options.install) {
-      runPnpmInstall(projectRoot)
+      runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
@@ -1887,9 +1941,10 @@ program
       }
 
       const projectRoot = findProjectRoot()
-      switchToGitHub(projectRoot, depName, depConfig, ref)
+      const workspaceRoot = findWorkspaceRoot(projectRoot)
+      switchToGitHub(projectRoot, depName, depConfig, ref, workspaceRoot)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     } else {
       const ref = resolvedRef ?? resolveGitLabRef(depConfig.gitlab!, distBranch)
@@ -1908,9 +1963,10 @@ program
       }
 
       const projectRoot = findProjectRoot()
-      switchToGitLab(projectRoot, depName, depConfig, ref)
+      const workspaceRoot = findWorkspaceRoot(projectRoot)
+      switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRoot)
       if (options.install) {
-        runPnpmInstall(projectRoot)
+        runPnpmInstall(projectRoot, workspaceRoot)
       }
     }
   })
@@ -1956,6 +2012,7 @@ program
     }
 
     const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
 
     const pkg = loadPackageJson(projectRoot)
     updatePackageJsonDep(pkg, depName, specifier)
@@ -1963,13 +2020,19 @@ program
     savePackageJson(projectRoot, pkg)
 
     // Remove from pnpm-workspace.yaml
-    const ws = loadWorkspaceYaml(projectRoot)
-    if (ws?.packages) {
-      ws.packages = ws.packages.filter(p => p !== depConfig.localPath)
-      if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(projectRoot, null)
-      } else {
-        saveWorkspaceYaml(projectRoot, ws)
+    if (depConfig.localPath) {
+      const wsRoot = workspaceRoot ?? projectRoot
+      const ws = loadWorkspaceYaml(wsRoot)
+      if (ws?.packages) {
+        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+        ws.packages = ws.packages.filter(p => p !== wsPath)
+        if (workspaceRoot) {
+          saveWorkspaceYaml(wsRoot, ws)
+        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+          saveWorkspaceYaml(wsRoot, null)
+        } else {
+          saveWorkspaceYaml(wsRoot, ws)
+        }
       }
     }
 
@@ -1979,7 +2042,7 @@ program
     console.log(`Switched ${depName} to NPM: ${specifier}`)
 
     if (options.install) {
-      runPnpmInstall(projectRoot)
+      runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
