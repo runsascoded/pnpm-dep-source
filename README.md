@@ -124,7 +124,7 @@ pds ls -av  # combined: all deps, verbose
 pds versions  # or pds v (alias for ls -v)
 ```
 
-The active source is highlighted with a green label (or `>` prefix in non-TTY mode). Verbose mode shows:
+The active source is highlighted with a green `*` prefix (plain `*` in non-TTY mode). Verbose mode shows:
 - Local git info (short SHA, dirty indicator)
 - `[dev]` indicator for devDependencies
 - Remote dist branch SHA and version (for at-a-glance staleness checks)
@@ -147,7 +147,7 @@ pds deinit [dep]    # or pds di [dep]
 pds -g di           # Stop tracking global dep
 ```
 
-This removes the dependency from `.pnpm-dep-source.json` but keeps it in `package.json`.
+This removes the dependency from `.pds.json` but keeps it in `package.json`.
 
 ### Remove a dependency
 
@@ -156,7 +156,7 @@ pds rm [dep]        # or pds r [dep]
 pds -g rm           # Remove global dep
 ```
 
-This removes the dependency from both `.pnpm-dep-source.json` and `package.json`, then runs `pnpm install`.
+This removes the dependency from both `.pds.json` and `package.json`, then runs `pnpm install`.
 
 ### Monorepo subdir support
 
@@ -172,7 +172,7 @@ When switching to GitHub, the specifier uses pnpm's `&path:` syntax:
 github:user/repo#sha&path:/packages/slidev
 ```
 
-The `subdir` field is stored in `.pnpm-dep-source.json` and can also be set manually via the config.
+The `subdir` field is stored in `.pds.json` and can also be set manually via the config.
 
 ### Git hooks
 
@@ -241,7 +241,7 @@ pds info             # Show version and install source
 
 ## Config file
 
-The tool stores configuration in `.pnpm-dep-source.json`:
+The tool stores configuration in `.pds.json` (also supports `.pnpm-dep-source.json` for backwards compatibility):
 
 ```json
 {
