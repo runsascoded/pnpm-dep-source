@@ -184,7 +184,7 @@ describe('pds round-trips', () => {
 
       run('github mock-dep -R main -I')
       const pkgAfterGh = readJson(pkgPath)
-      expect((pkgAfterGh.dependencies as Record<string, string>)['@test/mock-dep']).toContain('github:')
+      expect((pkgAfterGh.dependencies as Record<string, string>)['@test/mock-dep']).toContain('github.com/')
 
       run('npm mock-dep 2.0.0 -I')
       const pkgAfterNpm = readJson(pkgPath)
@@ -251,7 +251,7 @@ describe('pds round-trips', () => {
       run('github -R main -I')
 
       const pkg = readJson(join(TEST_DIR, 'package.json'))
-      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('https://github.com/test-org/mock-dep#main')
     })
 
     it('treats single arg as version for npm when one dep configured', () => {
@@ -406,16 +406,19 @@ describe('pds round-trips', () => {
         version: '1.0.0',
       })
 
-      // Remove existing config
-      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
-      if (existsSync(configPath)) rmSync(configPath)
+      // Remove existing config (both possible names)
+      for (const f of ['.pds.json', '.pnpm-dep-source.json']) {
+        const p = join(TEST_DIR, f)
+        if (existsSync(p)) rmSync(p)
+      }
 
       const output = run(`init ${newDepDir} -I`)
 
       // Should log that dep was added
       expect(output).toContain('Added @test/new-dep to dependencies')
 
-      // Config should be created
+      // Config should be created (as .pds.json when no prior config exists)
+      const configPath = join(TEST_DIR, '.pds.json')
       const config = readJson(configPath)
       expect(config.dependencies).toHaveProperty('@test/new-dep')
 
@@ -445,7 +448,7 @@ describe('pds round-trips', () => {
 
       // Switch to github
       run('github mock-dep -R main -I')
-      expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toContain('github:')
+      expect((readJson(join(TEST_DIR, 'package.json')).dependencies as Record<string, string>)['@test/mock-dep']).toContain('github.com/')
 
       // Deinit
       run('deinit mock-dep')
@@ -476,7 +479,7 @@ describe('pds round-trips', () => {
 
       const pkg = readJson(join(TEST_DIR, 'package.json'))
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
-        'github:test-org/mock-dep#main&path:/packages/mock-dep'
+        'https://github.com/test-org/mock-dep#main&path:/packages/mock-dep'
       )
     })
 
@@ -499,7 +502,7 @@ describe('pds round-trips', () => {
 
       const pkg = readJson(join(TEST_DIR, 'package.json'))
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
-        'github:test-org/mock-dep#main&path:/packages/mock-dep'
+        'https://github.com/test-org/mock-dep#main&path:/packages/mock-dep'
       )
 
       // Subdir should still be in config
@@ -513,7 +516,7 @@ describe('pds round-trips', () => {
 
       const pkg = readJson(join(TEST_DIR, 'package.json'))
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
-        'github:test-org/mock-dep#main'
+        'https://github.com/test-org/mock-dep#main'
       )
     })
   })
