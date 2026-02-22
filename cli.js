@@ -1724,10 +1724,11 @@ program
     const isGlobal = program.opts().global;
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
     const deps = Object.entries(config.dependencies);
-    // If only one arg and exactly one dep configured, treat arg as version
+    // If only one arg and exactly one dep configured, decide whether it's a version or dep query.
+    // Versions start with a digit; anything else is a dep query (substring match).
     let depQuery;
     let version;
-    if (arg1 && !arg2 && deps.length === 1) {
+    if (arg1 && !arg2 && deps.length === 1 && /^\d/.test(arg1)) {
         depQuery = undefined;
         version = arg1;
     }
