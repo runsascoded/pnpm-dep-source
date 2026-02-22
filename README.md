@@ -174,29 +174,55 @@ github:user/repo#sha&path:/packages/slidev
 
 The `subdir` field is stored in `.pnpm-dep-source.json` and can also be set manually via the config.
 
-### Pre-commit hooks
+### Git hooks
 
-Prevent accidentally committing with local dependencies:
+Prevent accidentally pushing (or committing) with local dependencies:
 
 ```bash
-pds hooks install    # Install global pre-commit hook
-pds hooks uninstall  # Remove it
+pds hooks install    # Install global git hooks
+pds hooks uninstall  # Remove them
 pds hooks status     # Check installation status
 ```
 
-The hook runs `pds check` before each commit, blocking if any pds-managed dependencies are set to `workspace:*`. Bypass with `git commit --no-verify` when needed.
+Installs both `pre-push` and `pre-commit` hooks via `git config --global core.hooksPath`. By default, the check runs on **pre-push** — local deps are caught before pushing, not before every commit (which would interfere with WIP workflows).
 
-Uses `git config --global core.hooksPath` to apply to all repositories. The hook chains to:
+Each hook calls `pds check --hook <type>`, and `pds check` decides whether to run based on the resolved `checkOn` config:
+
+```
+project .pds.json checkOn → global config checkOn → default ("pre-push")
+```
+
+#### Per-project overrides
+
+Set `"checkOn"` in `.pds.json` (or `.pnpm-dep-source.json`):
+
+```json
+{ "checkOn": "pre-commit" }
+```
+
+Valid values:
+- `"pre-push"` (default) — block on push
+- `"pre-commit"` — block on commit
+- `"none"` — disable the check entirely
+
+The legacy `"skipCheck": true` is treated as `"checkOn": "none"`.
+
+#### Global default override
+
+Set `"checkOn"` in `~/.config/pnpm-dep-source/config.json` to change the default for all projects.
+
+#### Hook chaining
+
+The hooks chain to:
 - Any previously configured `core.hooksPath` (saved and restored on uninstall)
-- Local `.git/hooks/pre-commit` if present (normally ignored when `core.hooksPath` is set)
-
-To disable the check for a specific project, add `"skipCheck": true` to `.pnpm-dep-source.json`.
+- Local `.git/hooks/` hooks if present (normally ignored when `core.hooksPath` is set)
 
 ### Check for local dependencies
 
 ```bash
-pds check            # Exits non-zero if any deps are local
+pds check            # Exits non-zero if any deps are local (always runs)
 pds check -q         # Quiet mode (exit code only)
+pds check --hook pre-push  # Only runs if checkOn resolves to "pre-push"
 ```
 
 ### Shell aliases
@@ -229,13 +255,13 @@ The tool stores configuration in `.pnpm-dep-source.json`:
       "subdir": "/packages/client"
     }
   },
-  "skipCheck": false
+  "checkOn": "pre-push"
 }
 ```
 
 The `subdir` field is optional and auto-detected during `init` for monorepo packages.
 
-Set `"skipCheck": true` to disable the pre-commit hook check for this project.
+Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default), `"pre-commit"`, or `"none"` to disable. The legacy `"skipCheck": true` is still supported (treated as `"checkOn": "none"`).
 
 ## Options
 
