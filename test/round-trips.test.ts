@@ -261,6 +261,13 @@ describe('pds round-trips', () => {
       expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('^3.0.0')
     })
 
+    it('treats single non-numeric arg as dep query for npm, not version', () => {
+      run('npm mock 2.0.0 -I')
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe('^2.0.0')
+    })
+
     it('errors when multiple deps and none specified', () => {
       // Add a second dep
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
