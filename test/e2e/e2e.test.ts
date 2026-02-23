@@ -99,7 +99,7 @@ describe('e2e: global installs', () => {
 
 describe('e2e: project-level installs', () => {
   const pkgPath = join(TEST_PROJECT_DIR, 'package.json')
-  const configPath = join(TEST_PROJECT_DIR, '.pnpm-dep-source.json')
+  const configPath = join(TEST_PROJECT_DIR, '.pds.json')
   const wsPath = join(TEST_PROJECT_DIR, 'pnpm-workspace.yaml')
 
   beforeEach(() => {
@@ -149,7 +149,7 @@ describe('e2e: project-level installs', () => {
       const output = pds('ls')
 
       expect(output).toContain('@test/mock-dep')
-      expect(output).toContain('Current: workspace:*')  // init auto-activates to local
+      expect(output).toContain('Local')
       expect(output).toContain('../mock-dep')
       expect(output).toContain('test-org/mock-dep')
     })
@@ -188,7 +188,7 @@ describe('e2e: project-level installs', () => {
 
       const pkg = readJson(pkgPath)
       expect(pkg.dependencies).toEqual({
-        '@test/mock-dep': 'github:test-org/mock-dep#main',
+        '@test/mock-dep': 'https://github.com/test-org/mock-dep#main',
       })
     })
 
@@ -268,7 +268,7 @@ describe('e2e: project-level installs', () => {
       expect(existsSync(wsPath)).toBe(true)
 
       pds('github -R main -I')
-      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('https://github.com/test-org/mock-dep#main')
       expect(existsSync(wsPath)).toBe(false)
 
       pds('local -I')
@@ -289,13 +289,13 @@ describe('e2e: project-level installs', () => {
 
     it('github → npm → github preserves state', () => {
       pds('github -R main -I')
-      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#main')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('https://github.com/test-org/mock-dep#main')
 
       pds('npm 2.0.0 -I')
       expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('^2.0.0')
 
       pds('github -R develop -I')
-      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('github:test-org/mock-dep#develop')
+      expect((readJson(pkgPath).dependencies as Record<string, string>)['@test/mock-dep']).toBe('https://github.com/test-org/mock-dep#develop')
     })
   })
 })
@@ -304,7 +304,7 @@ describe('e2e: real packages', () => {
   const REAL_PROJECT_DIR = '/real-project'
   const USE_KBD_DIR = '/use-kbd'
   const pkgPath = join(REAL_PROJECT_DIR, 'package.json')
-  const configPath = join(REAL_PROJECT_DIR, '.pnpm-dep-source.json')
+  const configPath = join(REAL_PROJECT_DIR, '.pds.json')
 
   function run(args: string): string {
     return execSync(`pds ${args}`, { cwd: REAL_PROJECT_DIR, encoding: 'utf-8' })
@@ -397,7 +397,7 @@ describe('e2e: real packages', () => {
 
       // Should have auto-activated to GitHub mode
       const pkg = readJson(pkgPath)
-      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toMatch(/^github:runsascoded\/use-kbd#/)
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toMatch(/^https:\/\/github\.com\/runsascoded\/use-kbd#/)
     })
 
     it('initializes and auto-activates local mode when -l provided', () => {
@@ -462,7 +462,7 @@ describe('e2e: real packages', () => {
       run('github -R dist -I')
 
       const pkg = readJson(pkgPath)
-      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('github:runsascoded/use-kbd#dist')
+      expect((pkg.dependencies as Record<string, string>)['use-kbd']).toBe('https://github.com/runsascoded/use-kbd#dist')
     })
 
     it('round-trips local → npm → local', () => {
