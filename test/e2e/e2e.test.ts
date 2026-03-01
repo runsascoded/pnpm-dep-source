@@ -59,7 +59,6 @@ describe('e2e: global installs', () => {
         '@test/mock-dep': {
           localPath: '/mock-dep',
           github: 'test-org/mock-dep',
-          npm: '@test/mock-dep',
           distBranch: 'dist',
         },
       },
@@ -135,7 +134,6 @@ describe('e2e: project-level installs', () => {
           '@test/mock-dep': {
             localPath: '../mock-dep',
             github: 'test-org/mock-dep',
-            npm: '@test/mock-dep',
             distBranch: 'dist',
           },
         },

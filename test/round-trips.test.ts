@@ -466,6 +466,74 @@ describe('pds round-trips', () => {
     })
   })
 
+  describe('init npm inference', () => {
+    it('skips npm for private packages', () => {
+      const privDepDir = join(TEST_DIR, 'priv-dep')
+      mkdirSync(privDepDir, { recursive: true })
+      writeJson(join(privDepDir, 'package.json'), {
+        name: '@test/priv-dep',
+        version: '1.0.0',
+        private: true,
+      })
+
+      run(`init ${privDepDir} -I`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { npm?: string }>)['@test/priv-dep']
+      expect(dep.npm).toBeUndefined()
+    })
+
+    it('skips npm for packages not published to npm', () => {
+      const unpubDepDir = join(TEST_DIR, 'unpub-dep')
+      mkdirSync(unpubDepDir, { recursive: true })
+      writeJson(join(unpubDepDir, 'package.json'), {
+        name: '@test/unpub-dep',
+        version: '1.0.0',
+      })
+
+      run(`init ${unpubDepDir} -I`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { npm?: string }>)['@test/unpub-dep']
+      expect(dep.npm).toBeUndefined()
+    })
+
+    it('sets npm when explicitly provided via -n', () => {
+      const depDir = join(TEST_DIR, 'explicit-npm-dep')
+      mkdirSync(depDir, { recursive: true })
+      writeJson(join(depDir, 'package.json'), {
+        name: '@test/explicit-npm-dep',
+        version: '1.0.0',
+      })
+
+      run(`init ${depDir} -n @test/explicit-npm-dep -I`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { npm?: string }>)['@test/explicit-npm-dep']
+      expect(dep.npm).toBe('@test/explicit-npm-dep')
+    })
+
+    it('sets npm via -n even for private packages', () => {
+      const depDir = join(TEST_DIR, 'priv-explicit-dep')
+      mkdirSync(depDir, { recursive: true })
+      writeJson(join(depDir, 'package.json'), {
+        name: '@test/priv-explicit-dep',
+        version: '1.0.0',
+        private: true,
+      })
+
+      run(`init ${depDir} -n @test/priv-explicit-dep -I`)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, { npm?: string }>)['@test/priv-explicit-dep']
+      expect(dep.npm).toBe('@test/priv-explicit-dep')
+    })
+  })
+
   describe('monorepo subdir support', () => {
     it('includes subdir in github specifier', () => {
       // Set up config with subdir field
