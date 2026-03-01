@@ -750,6 +750,7 @@ async function resolveGitLabRefAsync(repo: string, ref: string): Promise<string>
 
 interface PackageInfo {
   name: string
+  private?: boolean
   github?: string  // "user/repo" format
   gitlab?: string  // "group/subgroup/repo" format
 }
@@ -782,6 +783,7 @@ function parseRepoUrl(repoUrl: string): { github?: string; gitlab?: string } {
 // Parse package.json content into PackageInfo
 function parsePackageJson(pkg: Record<string, unknown>): PackageInfo {
   const result: PackageInfo = { name: pkg.name as string }
+  if (pkg.private === true) result.private = true
 
   const repo = pkg.repository
   if (repo) {
@@ -961,6 +963,13 @@ function getLatestNpmVersion(packageName: string): string {
     throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`)
   }
   return result.stdout.trim()
+}
+
+function npmPackageExists(packageName: string): boolean {
+  const result = spawnSync('npm', ['view', packageName, 'version'], {
+    encoding: 'utf-8',
+  })
+  return result.status === 0
 }
 
 async function getLatestNpmVersionAsync(packageName: string): Promise<string> {
@@ -1244,7 +1253,14 @@ program
       }
     }
 
-    const npmName = options.npm ?? pkgName
+    let npmName: string | undefined
+    if (options.npm !== undefined) {
+      npmName = options.npm
+    } else if (pkgInfo.private) {
+      npmName = undefined
+    } else if (npmPackageExists(pkgName)) {
+      npmName = pkgName
+    }
     const github = options.github ?? pkgInfo.github
     const gitlab = options.gitlab ?? pkgInfo.gitlab
     const subdir = 'subdir' in pkgInfo ? (pkgInfo as { subdir?: string }).subdir : undefined
@@ -1265,7 +1281,7 @@ program
       if (github) console.log(`  GitHub: ${github}`)
       if (gitlab) console.log(`  GitLab: ${gitlab}`)
       if (subdir) console.log(`  Subdir: ${subdir}`)
-      console.log(`  NPM: ${npmName}`)
+      if (npmName) console.log(`  NPM: ${npmName}`)
       console.log(`  Dist branch: ${options.distBranch}`)
 
       // Activate for global: install from local path if provided
@@ -1297,7 +1313,7 @@ program
     if (github) console.log(`  GitHub: ${github}`)
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
     if (subdir) console.log(`  Subdir: ${subdir}`)
-    console.log(`  NPM: ${npmName}`)
+    if (npmName) console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
 
     // Activate the dependency based on input type
@@ -1327,7 +1343,7 @@ program
       if (options.install) {
         runPnpmInstall(projectRoot, workspaceRoot)
       }
-    } else if (needsAdd) {
+    } else if (needsAdd && (depConfig.npm || npmPackageExists(pkgName))) {
       // No activation source but we added the dep - use npm latest
       const npmPkgName = depConfig.npm ?? pkgName
       const latestVersion = getLatestNpmVersion(npmPkgName)
