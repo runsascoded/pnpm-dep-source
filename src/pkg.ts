@@ -9,7 +9,17 @@ export function loadPackageJson(projectRoot: string): Record<string, unknown> {
   return JSON.parse(readFileSync(pkgPath, 'utf-8'))
 }
 
+function sortKeys(obj: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)))
+}
+
 export function savePackageJson(projectRoot: string, pkg: Record<string, unknown>): void {
+  if (pkg.dependencies) {
+    pkg.dependencies = sortKeys(pkg.dependencies as Record<string, string>)
+  }
+  if (pkg.devDependencies) {
+    pkg.devDependencies = sortKeys(pkg.devDependencies as Record<string, string>)
+  }
   const pkgPath = join(projectRoot, 'package.json')
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 }
