@@ -1,4 +1,4 @@
-import type { AheadBehind, PackageInfo } from './types.js';
+import type { PackageInfo } from './types.js';
 export declare function getLocalGitInfo(localPath: string): {
     sha: string;
     dirty: boolean;
@@ -7,7 +7,8 @@ export declare function getLocalGitInfoAsync(localPath: string): Promise<{
     sha: string;
     dirty: boolean;
 } | null>;
-export declare function getAheadBehindAsync(localPath: string, remoteUrl: string): Promise<AheadBehind | null>;
+export declare function parseDistSourceSha(version: string): string | undefined;
+export declare function gitRevListCountAsync(repoPath: string, base: string, head: string): Promise<number | null>;
 export declare function resolveGitHubRef(repo: string, ref: string): string;
 export declare function resolveGitHubRefAsync(repo: string, ref: string): Promise<string>;
 export declare function resolveGitLabRef(repo: string, ref: string): string;

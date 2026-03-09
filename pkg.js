@@ -5,7 +5,16 @@ export function loadPackageJson(projectRoot) {
     const pkgPath = join(projectRoot, 'package.json');
     return JSON.parse(readFileSync(pkgPath, 'utf-8'));
 }
+function sortKeys(obj) {
+    return Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)));
+}
 export function savePackageJson(projectRoot, pkg) {
+    if (pkg.dependencies) {
+        pkg.dependencies = sortKeys(pkg.dependencies);
+    }
+    if (pkg.devDependencies) {
+        pkg.devDependencies = sortKeys(pkg.devDependencies);
+    }
     const pkgPath = join(projectRoot, 'package.json');
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
 }

@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from 'path';
 import { VERSION, resolveConfigPath, GLOBAL_HOOKS_DIR, HOOKS_CONFIG_FILE } from './constants.js';
 import { findProjectRoot, findWorkspaceRoot, workspaceLocalPath } from './project.js';
 import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchingDep, loadHooksConfig, saveHooksConfig } from './config.js';
-import { loadPackageJson, savePackageJson, removePnpmOverride, updatePackageJsonDep, hasDependency, addDependency, removeDependency, getCurrentSource, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
+import { loadPackageJson, savePackageJson, removePnpmOverride, updatePackageJsonDep, hasDependency, addDependency, removeDependency, getCurrentSource, getInstalledVersion, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
 import { resolveGitHubRef, resolveGitLabRef, getLatestNpmVersion, npmPackageExists, getLocalPackageInfo, getRemotePackageInfo, isRepoUrl, getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync, } from './remote.js';
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js';
 import { updateViteConfig, makeGitHubSpecifier, switchToLocal, switchToGitHub, switchToGitLab, cleanupDepReferences, runPnpmInstall, runGlobalInstall, } from './switch.js';
@@ -385,7 +385,7 @@ async function listDepsAsync(verbose, all) {
             ? globalSourcesPromise.then(sources => Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources))))
             : Promise.resolve([]),
         verbose
-            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot, dep.localPath) : undefined)))
+            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot, dep.localPath) : undefined, getInstalledVersion(projectRoot, name) ?? undefined)))
             : Promise.resolve([]),
         verbose
             ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath)))

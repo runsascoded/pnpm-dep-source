@@ -34,18 +34,14 @@ export interface DepDisplayInfo {
     } | null;
     config: DepConfig;
 }
-export type AheadBehind = {
-    ahead: number;
-    behind: number;
-};
 export type RemoteVersions = {
     npm?: string;
     github?: string;
     githubVersion?: string;
     gitlab?: string;
     gitlabVersion?: string;
-    githubAheadBehind?: AheadBehind;
-    gitlabAheadBehind?: AheadBehind;
+    localAheadOfPinned?: number;
+    distAheadOfPinned?: number;
 };
 export interface HooksConfig {
     previousHooksPath?: string;

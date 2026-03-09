@@ -46,23 +46,18 @@ export async function getLocalGitInfoAsync(localPath) {
         return null;
     }
 }
-export async function getAheadBehindAsync(localPath, remoteUrl) {
+// Extract source commit SHA from npm-dist version strings like "0.1.0-dist.5926331"
+export function parseDistSourceSha(version) {
+    const match = version.match(/-dist\.([a-f0-9]+)$/);
+    return match?.[1];
+}
+// Count commits reachable from `head` but not from `base` in a local repo
+export async function gitRevListCountAsync(repoPath, base, head) {
     try {
-        // Get the local branch name to compare against the same branch on the remote
-        const branchResult = await spawnAsync('git', ['-C', localPath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' });
-        if (branchResult.status !== 0)
-            return null;
-        const localBranch = branchResult.stdout.trim();
-        if (localBranch === 'HEAD')
-            return null; // detached HEAD, skip
-        const fetchResult = await spawnAsync('git', ['-C', localPath, 'fetch', '--quiet', remoteUrl, localBranch], { encoding: 'utf-8' });
-        if (fetchResult.status !== 0)
-            return null;
-        const result = await spawnAsync('git', ['-C', localPath, 'rev-list', '--left-right', '--count', 'HEAD...FETCH_HEAD'], { encoding: 'utf-8' });
+        const result = await spawnAsync('git', ['-C', repoPath, 'rev-list', '--count', `${base}..${head}`], { encoding: 'utf-8' });
         if (result.status !== 0)
             return null;
-        const [ahead, behind] = result.stdout.trim().split(/\s+/).map(Number);
-        return { ahead, behind };
+        return parseInt(result.stdout.trim(), 10);
     }
     catch {
         return null;
