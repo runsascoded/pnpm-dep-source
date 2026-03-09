@@ -17,7 +17,7 @@ program
     .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools');
 program
     .command('init [path-or-url]')
-    .description('Initialize a dependency from local path or repo URL and activate it')
+    .description('Initialize (or reinitialize) a dependency from local path or repo URL and activate it. Re-running init on an existing dep refreshes its config from the local package.json.')
     .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
     .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
     .option('-f, --force', 'Suppress mismatch warnings')
@@ -148,6 +148,17 @@ program
         addDependency(pkg, pkgName, '*', !!options.dev);
         savePackageJson(projectRoot, pkg);
         console.log(`Added ${pkgName} to ${options.dev ? 'devDependencies' : 'dependencies'}`);
+    }
+    else if (options.dev) {
+        // Move existing dep to devDependencies if -D specified
+        const deps = pkg.dependencies;
+        if (deps && pkgName in deps) {
+            const specifier = deps[pkgName];
+            delete deps[pkgName];
+            addDependency(pkg, pkgName, specifier, true);
+            savePackageJson(projectRoot, pkg);
+            console.log(`Moved ${pkgName} to devDependencies`);
+        }
     }
     if (activateSource === 'local' && relLocalPath) {
         switchToLocal(projectRoot, pkgName, relLocalPath, workspaceRoot);
