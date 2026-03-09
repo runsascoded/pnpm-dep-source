@@ -534,6 +534,39 @@ describe('pds round-trips', () => {
     })
   })
 
+  describe('init reinit', () => {
+    it('moves dep from dependencies to devDependencies with -D', () => {
+      // dep starts in dependencies (from setupTestProject)
+      const pkgPath = join(TEST_DIR, 'package.json')
+      let pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBeDefined()
+
+      // reinit with -D
+      run(`init ${MOCK_DEP_DIR} -D -I`)
+
+      pkg = readJson(pkgPath)
+      expect((pkg.dependencies as Record<string, string> | undefined)?.['@test/mock-dep']).toBeUndefined()
+      expect((pkg.devDependencies as Record<string, string>)['@test/mock-dep']).toBe('workspace:*')
+    })
+
+    it('refreshes config on reinit', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+
+      // Manually set a stale distBranch value
+      const config = readJson(configPath)
+      const deps = config.dependencies as Record<string, Record<string, unknown>>
+      deps['@test/mock-dep'].distBranch = 'old-branch'
+      writeJson(configPath, config)
+
+      // reinit to refresh (distBranch defaults to 'dist')
+      run(`init ${MOCK_DEP_DIR} -I`)
+
+      const updated = readJson(configPath)
+      const dep = (updated.dependencies as Record<string, { distBranch?: string }>)['@test/mock-dep']
+      expect(dep.distBranch).toBe('dist')
+    })
+  })
+
   describe('monorepo subdir support', () => {
     it('includes subdir in github specifier', () => {
       // Set up config with subdir field
