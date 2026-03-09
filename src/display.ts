@@ -1,11 +1,12 @@
 import { resolve } from 'path'
 
-import type { DepConfig, DepDisplayInfo, RemoteVersions } from './types.js'
+import type { AheadBehind, DepConfig, DepDisplayInfo, RemoteVersions } from './types.js'
 import { c } from './constants.js'
 import { getCurrentSource, getInstalledVersion } from './pkg.js'
 import {
   getLocalGitInfo, getLocalGitInfoAsync,
   getGlobalInstallSource,
+  getAheadBehindAsync,
   resolveGitHubRef, resolveGitLabRef,
   resolveGitHubRefAsync, resolveGitLabRefAsync,
   fetchGitHubPackageJson, fetchGitLabPackageJson,
@@ -25,6 +26,15 @@ export function formatGitInfo(info: { sha: string; dirty: boolean } | null): str
   if (!info) return ''
   const dirtyStr = info.dirty ? ` ${c.red}dirty${c.reset}` : ''
   return ` ${c.blue}(${info.sha}${dirtyStr}${c.blue})${c.reset}`
+}
+
+export function formatAheadBehind(ab: AheadBehind, label?: string): string {
+  const parts: string[] = []
+  if (ab.behind > 0) parts.push(`${c.yellow}-${ab.behind}${c.reset}`)
+  if (ab.ahead > 0) parts.push(`${c.green}+${ab.ahead}${c.reset}`)
+  if (parts.length === 0) return ''
+  const suffix = label ? ` ${label}` : ''
+  return parts.join('') + suffix
 }
 
 // Build blue-colored parenthesized suffix showing current ref/version for the active line
@@ -71,7 +81,17 @@ export function displayDep(
 
   if (info.config.localPath) {
     const gitSuffix = info.gitInfo ? formatGitInfo(info.gitInfo) : ''
-    line('Local', active === 'local', info.config.localPath, gitSuffix)
+    let abSuffix = ''
+    if (verbose && versions) {
+      const abParts: string[] = []
+      const hasGh = !!versions.githubAheadBehind
+      const hasGl = !!versions.gitlabAheadBehind
+      if (hasGh) abParts.push(formatAheadBehind(versions.githubAheadBehind!, hasGl ? 'gh' : undefined))
+      if (hasGl) abParts.push(formatAheadBehind(versions.gitlabAheadBehind!, hasGh ? 'gl' : undefined))
+      const abStr = abParts.filter(Boolean).join(', ')
+      if (abStr) abSuffix = ` ${abStr}`
+    }
+    line('Local', active === 'local', info.config.localPath, gitSuffix + abSuffix)
   }
   if (info.config.github) {
     const isActive = active === 'github'
@@ -197,16 +217,23 @@ export async function buildProjectDepInfoAsync(
 export async function fetchRemoteVersionsAsync(
   dep: DepConfig,
   depName: string,
+  localPath?: string,
 ): Promise<RemoteVersions> {
   const distBranch = dep.distBranch ?? 'dist'
   const npmName = dep.npm ?? depName
 
-  const [npmVersion, ghSha, ghPkg, glSha, glPkg] = await Promise.all([
+  const [npmVersion, ghSha, ghPkg, glSha, glPkg, ghAB, glAB] = await Promise.all([
     getLatestNpmVersionAsync(npmName).catch(() => undefined),
     dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
     dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
     dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
     dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+    localPath && dep.github
+      ? getAheadBehindAsync(localPath, `https://github.com/${dep.github}.git`).catch(() => null)
+      : null,
+    localPath && dep.gitlab
+      ? getAheadBehindAsync(localPath, `https://gitlab.com/${dep.gitlab}.git`).catch(() => null)
+      : null,
   ])
 
   return {
@@ -215,6 +242,8 @@ export async function fetchRemoteVersionsAsync(
     githubVersion: ghPkg?.version as string | undefined,
     gitlab: glSha ? glSha.slice(0, 7) : undefined,
     gitlabVersion: glPkg?.version as string | undefined,
+    githubAheadBehind: ghAB ?? undefined,
+    gitlabAheadBehind: glAB ?? undefined,
   }
 }
 

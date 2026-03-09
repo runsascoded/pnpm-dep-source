@@ -385,7 +385,7 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
         Promise.all(entries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))
       ),
       verbose
-        ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+        ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath)))
         : Promise.resolve([] as RemoteVersions[]),
     ])
 
@@ -429,10 +429,12 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
         )
       : Promise.resolve([] as DepDisplayInfo[]),
     verbose
-      ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+      ? Promise.all(projectEntries.map(([name, dep]) =>
+          fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot!, dep.localPath) : undefined)
+        ))
       : Promise.resolve([] as RemoteVersions[]),
     verbose
-      ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+      ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath)))
       : Promise.resolve([] as RemoteVersions[]),
   ])
 
