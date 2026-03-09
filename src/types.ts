@@ -37,14 +37,12 @@ export interface DepDisplayInfo {
   config: DepConfig
 }
 
-export type AheadBehind = { ahead: number; behind: number }
-
 export type RemoteVersions = {
   npm?: string
   github?: string; githubVersion?: string
   gitlab?: string; gitlabVersion?: string
-  githubAheadBehind?: AheadBehind
-  gitlabAheadBehind?: AheadBehind
+  localAheadOfPinned?: number   // commits in local HEAD not in pinned source
+  distAheadOfPinned?: number    // commits in latest dist source not in pinned source
 }
 
 export interface HooksConfig {

@@ -12,7 +12,7 @@ import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchin
 import {
   loadPackageJson, savePackageJson, removePnpmOverride,
   updatePackageJsonDep, hasDependency, addDependency, removeDependency,
-  getCurrentSource,
+  getCurrentSource, getInstalledVersion,
   loadWorkspaceYaml, saveWorkspaceYaml,
 } from './pkg.js'
 import {
@@ -430,7 +430,11 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
       : Promise.resolve([] as DepDisplayInfo[]),
     verbose
       ? Promise.all(projectEntries.map(([name, dep]) =>
-          fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot!, dep.localPath) : undefined)
+          fetchRemoteVersionsAsync(
+            dep, name,
+            dep.localPath ? resolve(projectRoot!, dep.localPath) : undefined,
+            getInstalledVersion(projectRoot!, name) ?? undefined,
+          )
         ))
       : Promise.resolve([] as RemoteVersions[]),
     verbose
