@@ -349,7 +349,7 @@ async function listDepsAsync(verbose, all) {
         const [infos, remoteVersions] = await Promise.all([
             globalSourcesPromise.then(sources => Promise.all(entries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))),
             verbose
-                ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+                ? Promise.all(entries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath)))
                 : Promise.resolve([]),
         ]);
         const indexed = infos.map((info, i) => ({ info, versions: remoteVersions[i] }));
@@ -385,10 +385,10 @@ async function listDepsAsync(verbose, all) {
             ? globalSourcesPromise.then(sources => Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources))))
             : Promise.resolve([]),
         verbose
-            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot, dep.localPath) : undefined)))
             : Promise.resolve([]),
         verbose
-            ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name)))
+            ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath)))
             : Promise.resolve([]),
     ]);
     // Combine, alpha-sort, and display

@@ -46,6 +46,28 @@ export async function getLocalGitInfoAsync(localPath) {
         return null;
     }
 }
+export async function getAheadBehindAsync(localPath, remoteUrl) {
+    try {
+        // Get the local branch name to compare against the same branch on the remote
+        const branchResult = await spawnAsync('git', ['-C', localPath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf-8' });
+        if (branchResult.status !== 0)
+            return null;
+        const localBranch = branchResult.stdout.trim();
+        if (localBranch === 'HEAD')
+            return null; // detached HEAD, skip
+        const fetchResult = await spawnAsync('git', ['-C', localPath, 'fetch', '--quiet', remoteUrl, localBranch], { encoding: 'utf-8' });
+        if (fetchResult.status !== 0)
+            return null;
+        const result = await spawnAsync('git', ['-C', localPath, 'rev-list', '--left-right', '--count', 'HEAD...FETCH_HEAD'], { encoding: 'utf-8' });
+        if (result.status !== 0)
+            return null;
+        const [ahead, behind] = result.stdout.trim().split(/\s+/).map(Number);
+        return { ahead, behind };
+    }
+    catch {
+        return null;
+    }
+}
 export function resolveGitHubRef(repo, ref) {
     // Use gh api to resolve ref to SHA from GitHub
     const result = spawnSync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], {
