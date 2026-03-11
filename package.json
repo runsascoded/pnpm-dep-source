@@ -34,8 +34,7 @@
     "url": "https://github.com/runsascoded/pnpm-dep-source/issues"
   },
   "dependencies": {
-    "commander": "^13.0.0",
-    "magicast": "^0.5.2"
+    "commander": "^13.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

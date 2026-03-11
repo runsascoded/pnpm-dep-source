@@ -138,6 +138,34 @@ describe('pds round-trips', () => {
       const viteAfter = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
       expect(viteAfter).toBe(viteOriginal)
     })
+
+    it('preserves vite.config.ts formatting with multiple properties', () => {
+      const viteContent = `import { defineConfig } from 'vite'
+
+const allowedHosts = process.env.VITE_ALLOWED_HOSTS?.split(',') ?? []
+
+export default defineConfig({
+  server: {
+    port: 3201,
+    host: true,
+    allowedHosts,
+  },
+  plugins: [
+    react(),
+  ],
+  esbuild: {
+    logOverride: { 'this-is-undefined-in-esm': 'silent' }
+  }
+})
+`
+      writeFileSync(join(TEST_DIR, 'vite.config.ts'), viteContent)
+
+      run('local mock-dep -I')
+      run('github mock-dep -R main -I')
+
+      const viteAfter = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
+      expect(viteAfter).toBe(viteContent)
+    })
   })
 
   describe('local → npm round-trip', () => {
