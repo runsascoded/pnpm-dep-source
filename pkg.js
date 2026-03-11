@@ -88,12 +88,24 @@ export function getInstalledVersion(projectRoot, depName) {
         return null;
     }
 }
-export function getGlobalInstalledVersion(depName) {
+let globalRootCache;
+function getGlobalRoot() {
+    if (globalRootCache !== undefined)
+        return globalRootCache;
     try {
         const result = spawnSync('pnpm', ['root', '-g'], { encoding: 'utf-8' });
-        if (result.status !== 0)
+        globalRootCache = result.status === 0 ? result.stdout.trim() : null;
+    }
+    catch {
+        globalRootCache = null;
+    }
+    return globalRootCache;
+}
+export function getGlobalInstalledVersion(depName) {
+    try {
+        const globalRoot = getGlobalRoot();
+        if (!globalRoot)
             return null;
-        const globalRoot = result.stdout.trim();
         const pkgPath = join(globalRoot, depName, 'package.json');
         if (!existsSync(pkgPath))
             return null;

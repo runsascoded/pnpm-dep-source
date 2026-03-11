@@ -26,6 +26,8 @@ program
     .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
     .option('-l, --local <path>', 'Local path (when initializing from URL)')
     .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
+    .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
+    .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, npm (default: local for path, inferred for URL)')
     .action((pathOrUrl, options, cmd) => {
     if (!pathOrUrl) {
         cmd.help();
@@ -57,6 +59,23 @@ program
         pkgInfo = getLocalPackageInfo(localPath);
         activateSource = 'local';
     }
+    // --source flag overrides the default activation source (resolve 'g'/'git' after config is built)
+    let sourceFlag;
+    if (options.source) {
+        const s = options.source.toLowerCase();
+        if (s === 'local' || s === 'l')
+            activateSource = 'local';
+        else if (s === 'github' || s === 'gh')
+            activateSource = 'github';
+        else if (s === 'gitlab' || s === 'gl')
+            activateSource = 'gitlab';
+        else if (s === 'git' || s === 'g')
+            sourceFlag = 'git'; // resolve after we know github/gitlab
+        else if (s === 'npm' || s === 'n')
+            activateSource = 'npm';
+        else
+            throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, npm`);
+    }
     const pkgName = pkgInfo.name;
     // Warn on mismatches (unless --force)
     if (!options.force) {
@@ -83,6 +102,21 @@ program
     const github = options.github ?? pkgInfo.github;
     const gitlab = options.gitlab ?? pkgInfo.gitlab;
     const subdir = 'subdir' in pkgInfo ? pkgInfo.subdir : undefined;
+    // Resolve -s git/g now that we know which remotes are configured
+    if (sourceFlag === 'git') {
+        if (github && gitlab) {
+            throw new Error(`Both GitHub and GitLab configured for ${pkgName}. Use -s gh or -s gl explicitly.`);
+        }
+        else if (github) {
+            activateSource = 'github';
+        }
+        else if (gitlab) {
+            activateSource = 'gitlab';
+        }
+        else {
+            throw new Error(`No GitHub or GitLab repo configured for ${pkgName}. Use -H or -L to specify one.`);
+        }
+    }
     if (isGlobal) {
         const config = loadGlobalConfig();
         config.dependencies[pkgName] = {
@@ -166,20 +200,23 @@ program
             runPnpmInstall(projectRoot, workspaceRoot);
         }
     }
-    else if (activateSource === 'github' && github) {
-        switchToGitHub(projectRoot, pkgName, depConfig, undefined, workspaceRoot);
+    else if (activateSource === 'github') {
+        if (!github)
+            throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`);
+        switchToGitHub(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot);
         if (options.install) {
             runPnpmInstall(projectRoot, workspaceRoot);
         }
     }
-    else if (activateSource === 'gitlab' && gitlab) {
-        switchToGitLab(projectRoot, pkgName, depConfig, undefined, workspaceRoot);
+    else if (activateSource === 'gitlab') {
+        if (!gitlab)
+            throw new Error(`No GitLab repo configured for ${pkgName}. Use -L/--gitlab to specify one.`);
+        switchToGitLab(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot);
         if (options.install) {
             runPnpmInstall(projectRoot, workspaceRoot);
         }
     }
-    else if (needsAdd && (depConfig.npm || npmPackageExists(pkgName))) {
-        // No activation source but we added the dep - use npm latest
+    else if (activateSource === 'npm' || (needsAdd && !activateSource && (depConfig.npm || npmPackageExists(pkgName)))) {
         const npmPkgName = depConfig.npm ?? pkgName;
         const latestVersion = getLatestNpmVersion(npmPkgName);
         const pkgUpdated = loadPackageJson(projectRoot);
@@ -391,13 +428,12 @@ async function listDepsAsync(verbose, all) {
             ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath, getGlobalInstalledVersion(name) ?? undefined)))
             : Promise.resolve([]),
     ]);
-    // Combine, alpha-sort, and display
-    const allDeps = [
-        ...projectInfos.map((info, i) => ({ info, versions: projectVersions[i] })),
-        ...globalInfos.map((info, i) => ({ info, versions: globalVersions[i] })),
-    ];
-    allDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
-    for (const { info, versions } of allDeps) {
+    // Display globals first, then project deps (alpha-sorted within each group)
+    const globalDeps = globalInfos.map((info, i) => ({ info, versions: globalVersions[i] }));
+    const projectDeps = projectInfos.map((info, i) => ({ info, versions: projectVersions[i] }));
+    globalDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
+    projectDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
+    for (const { info, versions } of [...globalDeps, ...projectDeps]) {
         displayDep(info, verbose, versions);
     }
 }

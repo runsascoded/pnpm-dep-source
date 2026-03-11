@@ -36,6 +36,7 @@ export interface DepDisplayInfo {
 }
 export type RemoteVersions = {
     npm?: string;
+    npmSourceSha?: string;
     github?: string;
     githubVersion?: string;
     gitlab?: string;
@@ -43,6 +44,7 @@ export type RemoteVersions = {
     localAheadOfPinned?: number;
     distAheadOfPinned?: number;
     pinnedAheadOfDist?: number;
+    npmVersionsBehind?: number;
 };
 export interface HooksConfig {
     previousHooksPath?: string;

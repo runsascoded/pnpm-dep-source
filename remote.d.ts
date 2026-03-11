@@ -39,6 +39,13 @@ export declare function getLocalPackageName(localPath: string): string;
 export declare function getLatestNpmVersion(packageName: string): string;
 export declare function npmPackageExists(packageName: string): boolean;
 export declare function getLatestNpmVersionAsync(packageName: string): Promise<string>;
+export declare function getNpmVersionsAsync(packageName: string): Promise<string[]>;
+export declare function getNpmInfoAsync(packageName: string): Promise<{
+    version: string;
+    versions: string[];
+} | undefined>;
+export declare function countNpmVersionsBetween(versions: string[], from: string, to: string): number | undefined;
+export declare function baseVersion(version: string): string;
 export declare function parseGlobalPkgSource(pkg: {
     version?: string;
     resolved?: string;
