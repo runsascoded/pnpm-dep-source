@@ -1,13 +1,59 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { DepConfig, DepDisplayInfo, RemoteVersions } from '../src/types.js'
 import {
+  getSourceType,
   formatAheadCount, formatAheadBehind, formatGitInfo,
   getActiveParts, formatActiveSuffix, displayDep,
 } from '../src/display.js'
-import { countNpmVersionsBetween, baseVersion } from '../src/remote.js'
+import { parseDistSourceSha, countNpmVersionsBetween, baseVersion } from '../src/remote.js'
 
 // In non-TTY (test) mode, all ANSI codes are empty strings,
 // so output is plain text — no stripping needed.
+
+describe('getSourceType', () => {
+  it('returns local for workspace:*', () => {
+    expect(getSourceType('workspace:*')).toBe('local')
+  })
+  it('returns local for "local"', () => {
+    expect(getSourceType('local')).toBe('local')
+  })
+  it('returns github for github: prefix', () => {
+    expect(getSourceType('github:user/repo#abc1234')).toBe('github')
+  })
+  it('returns github for github.com URL', () => {
+    expect(getSourceType('https://github.com/user/repo#abc1234')).toBe('github')
+  })
+  it('returns gitlab for gitlab archive URL', () => {
+    expect(getSourceType('https://gitlab.com/user/repo/-/archive/abc1234/repo-abc1234.tar.gz')).toBe('gitlab')
+  })
+  it('returns npm for semver range', () => {
+    expect(getSourceType('^1.0.0')).toBe('npm')
+  })
+  it('returns npm for plain version', () => {
+    expect(getSourceType('1.0.0')).toBe('npm')
+  })
+  it('returns npm for latest', () => {
+    expect(getSourceType('latest')).toBe('npm')
+  })
+  it('returns unknown for unrecognized', () => {
+    expect(getSourceType('(not found)')).toBe('unknown')
+  })
+})
+
+describe('parseDistSourceSha', () => {
+  it('extracts sha from dist version', () => {
+    expect(parseDistSourceSha('0.1.0-dist.5926331')).toBe('5926331')
+  })
+  it('extracts longer sha', () => {
+    expect(parseDistSourceSha('1.2.3-dist.abc1234def5678')).toBe('abc1234def5678')
+  })
+  it('returns undefined for plain semver', () => {
+    expect(parseDistSourceSha('1.0.0')).toBeUndefined()
+  })
+  it('returns undefined for non-dist prerelease', () => {
+    expect(parseDistSourceSha('1.0.0-beta.1')).toBeUndefined()
+  })
+})
 
 describe('formatAheadCount', () => {
   it('returns empty for undefined', () => {
