@@ -38,12 +38,13 @@ export interface DepDisplayInfo {
 }
 
 export type RemoteVersions = {
-  npm?: string
+  npm?: string; npmSourceSha?: string
   github?: string; githubVersion?: string
   gitlab?: string; gitlabVersion?: string
   localAheadOfPinned?: number   // commits in local HEAD not in pinned source
   distAheadOfPinned?: number    // commits in latest dist source not in pinned source
   pinnedAheadOfDist?: number    // commits in pinned source not in latest dist (diverged)
+  npmVersionsBehind?: number    // npm versions between best-known base version and latest
 }
 
 export interface HooksConfig {
