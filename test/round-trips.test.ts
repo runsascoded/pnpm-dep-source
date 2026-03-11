@@ -595,6 +595,37 @@ export default defineConfig({
     })
   })
 
+  describe('init --source', () => {
+    it('activates github when init from local path with -s g', () => {
+      // Remove the dep so init adds it fresh
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      delete (pkg.dependencies as Record<string, string>)['@test/mock-dep']
+      writeJson(pkgPath, pkg)
+
+      // Remove existing config so init creates fresh
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      writeJson(configPath, { dependencies: {} })
+
+      // Init from local path but activate github
+      run(`init ${MOCK_DEP_DIR} -s g -H test-org/mock-dep -R main -I`)
+
+      // Config should have localPath
+      const config = readJson(configPath)
+      const dep = (config.dependencies as Record<string, Record<string, unknown>>)['@test/mock-dep']
+      expect(dep.localPath).toContain('mock-dep')
+
+      // package.json should point at github, not workspace:*
+      const updatedPkg = readJson(pkgPath)
+      const depSpec = (updatedPkg.dependencies as Record<string, string>)['@test/mock-dep']
+      expect(depSpec).toContain('github.com/test-org/mock-dep')
+      expect(depSpec).not.toBe('workspace:*')
+
+      // No pnpm-workspace.yaml (not local mode)
+      expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+    })
+  })
+
   describe('monorepo subdir support', () => {
     it('includes subdir in github specifier', () => {
       // Set up config with subdir field

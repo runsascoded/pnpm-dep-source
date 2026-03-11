@@ -45,7 +45,9 @@ program
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .action((pathOrUrl: string | undefined, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string }, cmd: { help: () => void }) => {
+  .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
+  .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, npm (default: local for path, inferred for URL)')
+  .action((pathOrUrl: string | undefined, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string; rawRef?: string; source?: string }, cmd: { help: () => void }) => {
     if (!pathOrUrl) {
       cmd.help()
       return
@@ -54,7 +56,7 @@ program
     const isUrl = isRepoUrl(pathOrUrl)
     let pkgInfo: ReturnType<typeof getLocalPackageInfo>
     let localPath: string | undefined
-    let activateSource: 'local' | 'github' | 'gitlab' | undefined
+    let activateSource: 'local' | 'github' | 'gitlab' | 'npm' | undefined
 
     if (isUrl) {
       // Fetch package.json from remote repo
@@ -73,6 +75,18 @@ program
       localPath = resolve(pathOrUrl)
       pkgInfo = getLocalPackageInfo(localPath)
       activateSource = 'local'
+    }
+
+    // --source flag overrides the default activation source (resolve 'g'/'git' after config is built)
+    let sourceFlag: string | undefined
+    if (options.source) {
+      const s = options.source.toLowerCase()
+      if (s === 'local' || s === 'l') activateSource = 'local'
+      else if (s === 'github' || s === 'gh') activateSource = 'github'
+      else if (s === 'gitlab' || s === 'gl') activateSource = 'gitlab'
+      else if (s === 'git' || s === 'g') sourceFlag = 'git'  // resolve after we know github/gitlab
+      else if (s === 'npm' || s === 'n') activateSource = 'npm'
+      else throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, npm`)
     }
 
     const pkgName = pkgInfo.name
@@ -101,6 +115,19 @@ program
     const github = options.github ?? pkgInfo.github
     const gitlab = options.gitlab ?? pkgInfo.gitlab
     const subdir = 'subdir' in pkgInfo ? (pkgInfo as { subdir?: string }).subdir : undefined
+
+    // Resolve -s git/g now that we know which remotes are configured
+    if (sourceFlag === 'git') {
+      if (github && gitlab) {
+        throw new Error(`Both GitHub and GitLab configured for ${pkgName}. Use -s gh or -s gl explicitly.`)
+      } else if (github) {
+        activateSource = 'github'
+      } else if (gitlab) {
+        activateSource = 'gitlab'
+      } else {
+        throw new Error(`No GitHub or GitLab repo configured for ${pkgName}. Use -H or -L to specify one.`)
+      }
+    }
 
     if (isGlobal) {
       const config = loadGlobalConfig()
@@ -180,18 +207,19 @@ program
       if (options.install) {
         runPnpmInstall(projectRoot, workspaceRoot)
       }
-    } else if (activateSource === 'github' && github) {
-      switchToGitHub(projectRoot, pkgName, depConfig, undefined, workspaceRoot)
+    } else if (activateSource === 'github') {
+      if (!github) throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`)
+      switchToGitHub(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot)
       if (options.install) {
         runPnpmInstall(projectRoot, workspaceRoot)
       }
-    } else if (activateSource === 'gitlab' && gitlab) {
-      switchToGitLab(projectRoot, pkgName, depConfig, undefined, workspaceRoot)
+    } else if (activateSource === 'gitlab') {
+      if (!gitlab) throw new Error(`No GitLab repo configured for ${pkgName}. Use -L/--gitlab to specify one.`)
+      switchToGitLab(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot)
       if (options.install) {
         runPnpmInstall(projectRoot, workspaceRoot)
       }
-    } else if (needsAdd && (depConfig.npm || npmPackageExists(pkgName))) {
-      // No activation source but we added the dep - use npm latest
+    } else if (activateSource === 'npm' || (needsAdd && !activateSource && (depConfig.npm || npmPackageExists(pkgName)))) {
       const npmPkgName = depConfig.npm ?? pkgName
       const latestVersion = getLatestNpmVersion(npmPkgName)
       const pkgUpdated = loadPackageJson(projectRoot)
