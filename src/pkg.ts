@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { execSync, spawnSync } from 'child_process'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -103,6 +103,20 @@ export function getInstalledVersion(projectRoot: string, depName: string): strin
     return null
   }
   try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
+    return pkg.version ?? null
+  } catch {
+    return null
+  }
+}
+
+export function getGlobalInstalledVersion(depName: string): string | null {
+  try {
+    const result = spawnSync('pnpm', ['root', '-g'], { encoding: 'utf-8' })
+    if (result.status !== 0) return null
+    const globalRoot = result.stdout.trim()
+    const pkgPath = join(globalRoot, depName, 'package.json')
+    if (!existsSync(pkgPath)) return null
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))
     return pkg.version ?? null
   } catch {

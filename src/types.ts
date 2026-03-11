@@ -43,6 +43,7 @@ export type RemoteVersions = {
   gitlab?: string; gitlabVersion?: string
   localAheadOfPinned?: number   // commits in local HEAD not in pinned source
   distAheadOfPinned?: number    // commits in latest dist source not in pinned source
+  pinnedAheadOfDist?: number    // commits in pinned source not in latest dist (diverged)
 }
 
 export interface HooksConfig {
