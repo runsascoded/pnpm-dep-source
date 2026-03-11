@@ -42,6 +42,7 @@ export type RemoteVersions = {
     gitlabVersion?: string;
     localAheadOfPinned?: number;
     distAheadOfPinned?: number;
+    pinnedAheadOfDist?: number;
 };
 export interface HooksConfig {
     previousHooksPath?: string;

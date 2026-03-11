@@ -1,6 +1,6 @@
 import { resolve } from 'path';
 import { c } from './constants.js';
-import { getCurrentSource, getInstalledVersion } from './pkg.js';
+import { getCurrentSource, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
 import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getLatestNpmVersionAsync, } from './remote.js';
 export function getSourceType(source) {
     if (source === 'workspace:*' || source === 'local')
@@ -24,10 +24,21 @@ export function formatAheadCount(n) {
         return '';
     return `${c.green}+${n}${c.reset}`;
 }
-// Build blue-colored parenthesized suffix showing current ref/version for the active line
-export function formatActiveSuffix(info) {
+export function formatAheadBehind(ahead, behind) {
+    const a = ahead && ahead > 0 ? ahead : 0;
+    const b = behind && behind > 0 ? behind : 0;
+    if (a > 0 && b > 0)
+        return ` ${c.green}+${a}${c.red}-${b}${c.reset}`;
+    if (a > 0)
+        return ` ${c.green}+${a}${c.reset}`;
+    if (b > 0)
+        return ` ${c.red}-${b}${c.reset}`;
+    return '';
+}
+// Get the raw parts for the active source (sha, version, etc.)
+export function getActiveParts(info) {
     if (info.sourceType === 'local')
-        return '';
+        return [];
     const parts = [];
     if (info.isGlobal && info.currentSpecifier) {
         parts.push(info.currentSpecifier);
@@ -46,6 +57,11 @@ export function formatActiveSuffix(info) {
         if (info.version)
             parts.push(info.version);
     }
+    return parts;
+}
+// Build blue-colored parenthesized suffix showing current ref/version for the active line
+export function formatActiveSuffix(info) {
+    const parts = getActiveParts(info);
     if (parts.length === 0)
         return '';
     return ` ${c.blue}(${parts.join('; ')})${c.reset}`;
@@ -70,32 +86,34 @@ export function displayDep(info, verbose = false, remoteVersions) {
     }
     if (info.config.github) {
         const isActive = active === 'github';
-        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
-        const distParts = [versions?.github, versions?.githubVersion].filter(Boolean);
         const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : '';
-        const distAheadStr = formatAheadCount(versions?.distAheadOfPinned);
-        const distAheadSuffix = distAheadStr ? ` ${distAheadStr}` : '';
+        const distParts = [versions?.github, versions?.githubVersion].filter(Boolean);
+        const pinnedParts = isActive ? getActiveParts(info) : [];
+        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
+        const distDelta = formatAheadBehind(versions?.distAheadOfPinned, versions?.pinnedAheadOfDist);
         if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
-            line('GitHub', true, info.config.github + subdirSuffix, activeSuffix);
-            console.log(`      ${c.blue}dist@${distParts.join('; ')}${c.reset}${distAheadSuffix}`);
+            line('GitHub', true, info.config.github + subdirSuffix, '');
+            console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`);
+            console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
         }
         else {
-            const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distAheadSuffix}` : '';
+            const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distDelta}` : '';
             line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix);
         }
     }
     if (info.config.gitlab) {
         const isActive = active === 'gitlab';
-        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
         const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean);
-        const glDistAheadStr = formatAheadCount(versions?.distAheadOfPinned);
-        const glDistAheadSuffix = glDistAheadStr ? ` ${glDistAheadStr}` : '';
+        const pinnedParts = isActive ? getActiveParts(info) : [];
+        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
+        const distDelta = formatAheadBehind(versions?.distAheadOfPinned, versions?.pinnedAheadOfDist);
         if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
-            line('GitLab', true, info.config.gitlab, activeSuffix);
-            console.log(`      ${c.blue}dist@${distParts.join('; ')}${c.reset}${glDistAheadSuffix}`);
+            line('GitLab', true, info.config.gitlab, '');
+            console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`);
+            console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
         }
         else {
-            const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${glDistAheadSuffix}` : '';
+            const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distDelta}` : '';
             line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix);
         }
     }
@@ -113,12 +131,14 @@ export function buildGlobalDepInfo(name, dep) {
     const installSource = getGlobalInstallSource(name);
     const sourceType = installSource?.source ?? 'unknown';
     const gitInfo = dep.localPath ? getLocalGitInfo(dep.localPath) : null;
+    const version = sourceType !== 'local' ? (getGlobalInstalledVersion(name) ?? undefined) : undefined;
     return {
         name,
         currentSource: installSource?.source ?? '(not installed)',
         currentSpecifier: installSource?.specifier,
         sourceType,
         isGlobal: true,
+        version,
         gitInfo,
         config: dep,
     };
@@ -144,12 +164,14 @@ export async function buildGlobalDepInfoAsync(name, dep, globalSources) {
     const installSource = globalSources.get(name) ?? null;
     const sourceType = installSource?.source ?? 'unknown';
     const gitInfo = dep.localPath ? await getLocalGitInfoAsync(dep.localPath) : null;
+    const version = sourceType !== 'local' ? (getGlobalInstalledVersion(name) ?? undefined) : undefined;
     return {
         name,
         currentSource: installSource?.source ?? '(not installed)',
         currentSpecifier: installSource?.specifier,
         sourceType,
         isGlobal: true,
+        version,
         gitInfo,
         config: dep,
     };
@@ -186,17 +208,23 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     const pinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined;
     let localAheadOfPinned;
     let distAheadOfPinned;
+    let pinnedAheadOfDist;
     if (localPath && pinnedSourceSha) {
-        const [localAhead, distAhead] = await Promise.all([
+        const [localAhead, distAhead, pinnedAhead] = await Promise.all([
             gitRevListCountAsync(localPath, pinnedSourceSha, 'HEAD').catch(() => null),
             latestDistSourceSha && latestDistSourceSha !== pinnedSourceSha
                 ? gitRevListCountAsync(localPath, pinnedSourceSha, latestDistSourceSha).catch(() => null)
+                : null,
+            latestDistSourceSha && latestDistSourceSha !== pinnedSourceSha
+                ? gitRevListCountAsync(localPath, latestDistSourceSha, pinnedSourceSha).catch(() => null)
                 : null,
         ]);
         if (localAhead && localAhead > 0)
             localAheadOfPinned = localAhead;
         if (distAhead && distAhead > 0)
             distAheadOfPinned = distAhead;
+        if (pinnedAhead && pinnedAhead > 0)
+            pinnedAheadOfDist = pinnedAhead;
     }
     return {
         npm: npmVersion,
@@ -206,6 +234,7 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
         gitlabVersion: glPkg?.version,
         localAheadOfPinned,
         distAheadOfPinned,
+        pinnedAheadOfDist,
     };
 }
 // Fetch remote version info for a dependency (sync, for verbose listing)

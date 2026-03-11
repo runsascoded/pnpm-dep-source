@@ -8,6 +8,7 @@ export declare function addDependency(pkg: Record<string, unknown>, depName: str
 export declare function removeDependency(pkg: Record<string, unknown>, depName: string): boolean;
 export declare function getCurrentSource(pkg: Record<string, unknown>, depName: string): string;
 export declare function getInstalledVersion(projectRoot: string, depName: string): string | null;
+export declare function getGlobalInstalledVersion(depName: string): string | null;
 export declare function loadWorkspaceYaml(projectRoot: string): WorkspaceConfig | null;
 export declare function saveWorkspaceYaml(projectRoot: string, config: WorkspaceConfig | null): void;
 //# sourceMappingURL=pkg.d.ts.map

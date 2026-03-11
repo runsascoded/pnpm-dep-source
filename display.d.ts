@@ -5,6 +5,8 @@ export declare function formatGitInfo(info: {
     dirty: boolean;
 } | null): string;
 export declare function formatAheadCount(n: number | undefined): string;
+export declare function formatAheadBehind(ahead?: number, behind?: number): string;
+export declare function getActiveParts(info: DepDisplayInfo): string[];
 export declare function formatActiveSuffix(info: DepDisplayInfo): string;
 export declare function displayDep(info: DepDisplayInfo, verbose?: boolean, remoteVersions?: RemoteVersions): void;
 export declare function buildGlobalDepInfo(name: string, dep: DepConfig): DepDisplayInfo;
