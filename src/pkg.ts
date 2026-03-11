@@ -110,11 +110,23 @@ export function getInstalledVersion(projectRoot: string, depName: string): strin
   }
 }
 
-export function getGlobalInstalledVersion(depName: string): string | null {
+let globalRootCache: string | null | undefined
+
+function getGlobalRoot(): string | null {
+  if (globalRootCache !== undefined) return globalRootCache
   try {
     const result = spawnSync('pnpm', ['root', '-g'], { encoding: 'utf-8' })
-    if (result.status !== 0) return null
-    const globalRoot = result.stdout.trim()
+    globalRootCache = result.status === 0 ? result.stdout.trim() : null
+  } catch {
+    globalRootCache = null
+  }
+  return globalRootCache
+}
+
+export function getGlobalInstalledVersion(depName: string): string | null {
+  try {
+    const globalRoot = getGlobalRoot()
+    if (!globalRoot) return null
     const pkgPath = join(globalRoot, depName, 'package.json')
     if (!existsSync(pkgPath)) return null
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'))

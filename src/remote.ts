@@ -31,24 +31,38 @@ export function getLocalGitInfo(localPath: string): { sha: string; dirty: boolea
   }
 }
 
-export async function getLocalGitInfoAsync(localPath: string): Promise<{ sha: string; dirty: boolean } | null> {
+const gitInfoCache = new Map<string, Promise<{ sha: string; dirty: boolean } | null>>()
+
+export function getLocalGitInfoAsync(localPath: string): Promise<{ sha: string; dirty: boolean } | null> {
   if (!existsSync(localPath)) {
-    return null
+    return Promise.resolve(null)
   }
-  try {
-    const [shaResult, statusResult] = await Promise.all([
-      spawnAsync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf-8' }),
-      spawnAsync('git', ['-C', localPath, 'status', '--porcelain'], { encoding: 'utf-8' }),
-    ])
-    if (shaResult.status !== 0) {
+  // Cache by git repo root to deduplicate deps sharing the same repo
+  const cached = gitInfoCache.get(localPath)
+  if (cached) return cached
+  const promise = (async () => {
+    try {
+      const [shaResult, statusResult, rootResult] = await Promise.all([
+        spawnAsync('git', ['-C', localPath, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf-8' }),
+        spawnAsync('git', ['-C', localPath, 'status', '--porcelain'], { encoding: 'utf-8' }),
+        spawnAsync('git', ['-C', localPath, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }),
+      ])
+      if (shaResult.status !== 0) return null
+      const sha = shaResult.stdout.trim()
+      const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0
+      const result = { sha, dirty }
+      // Also cache under the repo root so other paths in the same repo hit the cache
+      if (rootResult.status === 0) {
+        const root = rootResult.stdout.trim()
+        if (root !== localPath) gitInfoCache.set(root, Promise.resolve(result))
+      }
+      return result
+    } catch {
       return null
     }
-    const sha = shaResult.stdout.trim()
-    const dirty = statusResult.status === 0 && statusResult.stdout.trim().length > 0
-    return { sha, dirty }
-  } catch {
-    return null
-  }
+  })()
+  gitInfoCache.set(localPath, promise)
+  return promise
 }
 
 // Extract source commit SHA from npm-dist version strings like "0.1.0-dist.5926331"
@@ -86,12 +100,21 @@ export function resolveGitHubRef(repo: string, ref: string): string {
   return result.stdout.trim()
 }
 
-export async function resolveGitHubRefAsync(repo: string, ref: string): Promise<string> {
-  const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`)
-  }
-  return result.stdout.trim()
+const ghRefCache = new Map<string, Promise<string>>()
+
+export function resolveGitHubRefAsync(repo: string, ref: string): Promise<string> {
+  const key = `${repo}:${ref}`
+  const cached = ghRefCache.get(key)
+  if (cached) return cached
+  const promise = (async () => {
+    const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' })
+    if (result.status !== 0) {
+      throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`)
+    }
+    return result.stdout.trim()
+  })()
+  ghRefCache.set(key, promise)
+  return promise
 }
 
 export function resolveGitLabRef(repo: string, ref: string): string {
@@ -111,18 +134,27 @@ export function resolveGitLabRef(repo: string, ref: string): string {
   }
 }
 
-export async function resolveGitLabRefAsync(repo: string, ref: string): Promise<string> {
-  const encodedRepo = encodeURIComponent(repo)
-  const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`)
-  }
-  try {
-    const data = JSON.parse(result.stdout)
-    return data.id
-  } catch {
-    throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`)
-  }
+const glRefCache = new Map<string, Promise<string>>()
+
+export function resolveGitLabRefAsync(repo: string, ref: string): Promise<string> {
+  const key = `${repo}:${ref}`
+  const cached = glRefCache.get(key)
+  if (cached) return cached
+  const promise = (async () => {
+    const encodedRepo = encodeURIComponent(repo)
+    const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' })
+    if (result.status !== 0) {
+      throw new Error(`Failed to resolve GitLab ref "${ref}" for ${repo}: ${result.stderr}`)
+    }
+    try {
+      const data = JSON.parse(result.stdout)
+      return data.id
+    } catch {
+      throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`)
+    }
+  })()
+  glRefCache.set(key, promise)
+  return promise
 }
 
 // Parse GitHub/GitLab repo from a URL string
@@ -198,22 +230,40 @@ export function fetchGitLabPackageJson(repo: string, ref = 'HEAD'): Record<strin
   return JSON.parse(result.stdout)
 }
 
-export async function fetchGitHubPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
-  const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`)
-  }
-  const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
-  return JSON.parse(content)
+const ghPkgCache = new Map<string, Promise<Record<string, unknown>>>()
+
+export function fetchGitHubPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
+  const key = `${repo}:${ref}`
+  const cached = ghPkgCache.get(key)
+  if (cached) return cached
+  const promise = (async () => {
+    const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' })
+    if (result.status !== 0) {
+      throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`)
+    }
+    const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
+    return JSON.parse(content)
+  })()
+  ghPkgCache.set(key, promise)
+  return promise
 }
 
-export async function fetchGitLabPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
-  const encodedPath = encodeURIComponent(repo)
-  const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
-  }
-  return JSON.parse(result.stdout)
+const glPkgCache = new Map<string, Promise<Record<string, unknown>>>()
+
+export function fetchGitLabPackageJsonAsync(repo: string, ref = 'HEAD'): Promise<Record<string, unknown>> {
+  const key = `${repo}:${ref}`
+  const cached = glPkgCache.get(key)
+  if (cached) return cached
+  const promise = (async () => {
+    const encodedPath = encodeURIComponent(repo)
+    const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' })
+    if (result.status !== 0) {
+      throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
+    }
+    return JSON.parse(result.stdout)
+  })()
+  glPkgCache.set(key, promise)
+  return promise
 }
 
 // Detect GitHub/GitLab repo from git remote in or above the given path
@@ -328,11 +378,59 @@ export function npmPackageExists(packageName: string): boolean {
 }
 
 export async function getLatestNpmVersionAsync(packageName: string): Promise<string> {
-  const result = await spawnAsync('npm', ['view', packageName, 'version'], { encoding: 'utf-8' })
-  if (result.status !== 0) {
-    throw new Error(`Failed to get latest version for ${packageName}: ${result.stderr}`)
-  }
-  return result.stdout.trim()
+  const info = await getNpmInfoAsync(packageName)
+  if (!info) throw new Error(`Failed to get latest version for ${packageName}`)
+  return info.version
+}
+
+export async function getNpmVersionsAsync(packageName: string): Promise<string[]> {
+  const info = await getNpmInfoAsync(packageName)
+  return info?.versions ?? []
+}
+
+// Fetch npm package info via registry HTTP API (faster than spawning npm CLI).
+// Cached per package name to avoid redundant calls.
+const npmInfoCache = new Map<string, Promise<{ version: string; versions: string[] } | undefined>>()
+
+export function getNpmInfoAsync(packageName: string): Promise<{ version: string; versions: string[] } | undefined> {
+  const cached = npmInfoCache.get(packageName)
+  if (cached) return cached
+  const promise = (async () => {
+    try {
+      const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`)
+      if (!resp.ok) return undefined
+      const data = await resp.json() as Record<string, unknown>
+      const distTags = data['dist-tags'] as Record<string, string> | undefined
+      const version = distTags?.latest ?? (data.version as string)
+      if (!version) return undefined
+      const rawVersions = data.versions
+      const versions = rawVersions && typeof rawVersions === 'object'
+        ? Object.keys(rawVersions as object)
+        : [version]
+      return { version, versions }
+    } catch {
+      return undefined
+    }
+  })()
+  npmInfoCache.set(packageName, promise)
+  return promise
+}
+
+// Count published npm versions strictly after `from` up to and including `to`.
+// Returns undefined if either version is not found in the list.
+export function countNpmVersionsBetween(versions: string[], from: string, to: string): number | undefined {
+  if (from === to) return 0
+  const fromIdx = versions.indexOf(from)
+  const toIdx = versions.indexOf(to)
+  if (fromIdx < 0 || toIdx < 0) return undefined
+  if (toIdx <= fromIdx) return undefined
+  return toIdx - fromIdx
+}
+
+// Strip pre-release/dist suffixes to get the base semver: "1.2.3-dist.abc" → "1.2.3"
+export function baseVersion(version: string): string {
+  const match = version.match(/^(\d+\.\d+\.\d+)/)
+  return match ? match[1] : version
 }
 
 // Cache for global install sources (fetched once via pnpm list -g --json)
