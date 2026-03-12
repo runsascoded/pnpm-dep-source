@@ -40,8 +40,12 @@ export function findProjectRoot(startDir = process.cwd()) {
     catch {
         // Ignore errors reading directory
     }
+    // If exactly one subdirectory has a package.json, use it automatically
+    if (suggestions.length === 1) {
+        return join(cwd, suggestions[0]);
+    }
     let message = 'No package.json found in current directory or any parent.';
-    if (suggestions.length > 0) {
+    if (suggestions.length > 1) {
         message += `\n\nFound JS projects in subdirectories:\n${suggestions.map(s => `  cd ${s}`).join('\n')}`;
     }
     throw new Error(message);

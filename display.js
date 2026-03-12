@@ -1,6 +1,6 @@
 import { resolve } from 'path';
 import { c } from './constants.js';
-import { getCurrentSource, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
+import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
 import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, countNpmVersionsBetween, baseVersion, } from './remote.js';
 export function getSourceType(source) {
     if (source === 'workspace:*' || source === 'local')
@@ -35,6 +35,18 @@ export function formatAheadBehind(ahead, behind) {
         return ` ${c.red}-${b}${c.reset}`;
     return '';
 }
+// Extract the pinned SHA from a GitHub/GitLab source specifier
+export function extractSourceSha(source) {
+    // GitHub: github:user/repo#sha or https://github.com/user/repo#sha
+    const ghMatch = source.match(/#([a-f0-9]+)$/);
+    if (ghMatch)
+        return ghMatch[1].slice(0, 7);
+    // GitLab: https://gitlab.com/user/repo/-/archive/<sha>/repo-<sha>.tar.gz
+    const glMatch = source.match(/\/-\/archive\/([^/]+)\//);
+    if (glMatch)
+        return glMatch[1].slice(0, 7);
+    return undefined;
+}
 // Get the raw parts for the active source (sha, version, etc.)
 export function getActiveParts(info) {
     if (info.sourceType === 'local')
@@ -44,16 +56,9 @@ export function getActiveParts(info) {
         parts.push(info.currentSpecifier);
     }
     else {
-        if (info.sourceType === 'github') {
-            const match = info.currentSource.match(/#([a-f0-9]+)$/);
-            if (match)
-                parts.push(match[1].slice(0, 7));
-        }
-        else if (info.sourceType === 'gitlab') {
-            const match = info.currentSource.match(/\/-\/archive\/([^/]+)\//);
-            if (match)
-                parts.push(match[1].slice(0, 7));
-        }
+        const sha = extractSourceSha(info.currentSource);
+        if (sha)
+            parts.push(sha);
         if (info.version)
             parts.push(info.version);
     }
@@ -68,7 +73,7 @@ export function formatActiveSuffix(info) {
 }
 export function displayDep(info, verbose = false, remoteVersions) {
     const nameColor = info.isGlobal ? c.magenta : info.isDev ? c.yellow : c.cyan;
-    const tag = info.isGlobal ? ` ${c.yellow}[global]${c.reset}`
+    const tag = info.isGlobal ? ` ${c.magenta}[global]${c.reset}`
         : info.isDev ? ` ${c.yellow}[dev]${c.reset}`
             : '';
     console.log(`${c.bold}${nameColor}${info.name}${c.reset}${tag}:`);
@@ -85,38 +90,43 @@ export function displayDep(info, verbose = false, remoteVersions) {
         const aheadSuffix = aheadStr ? ` ${aheadStr}` : '';
         line('Local', active === 'local', info.config.localPath, gitSuffix + aheadSuffix);
     }
-    if (info.config.github) {
-        const isActive = active === 'github';
+    // Helper for GitHub/GitLab display with committed transition and pinned/latest sub-lines
+    function showDistLine(label, repo, isActive, distSha, distVersion) {
         const subdirSuffix = info.config.subdir ? ` ${c.cyan}[${info.config.subdir}]${c.reset}` : '';
-        const distParts = [versions?.github, versions?.githubVersion].filter(Boolean);
+        const distParts = [distSha, distVersion].filter(Boolean);
         const pinnedParts = isActive ? getActiveParts(info) : [];
         const activeSuffix = isActive ? formatActiveSuffix(info) : '';
         const distDelta = formatAheadBehind(versions?.distAheadOfPinned, versions?.pinnedAheadOfDist);
-        if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
-            line('GitHub', true, info.config.github + subdirSuffix, '');
+        // Committed transition: show was/now sub-lines
+        if (isActive && versions?.committedDistSha) {
+            const committedSrcSha = versions.committedDistVersion
+                ? parseDistSourceSha(versions.committedDistVersion) : undefined;
+            const currentSha = extractSourceSha(info.currentSource);
+            const currentSrcSha = info.version ? parseDistSourceSha(info.version) : undefined;
+            line(label, true, repo + subdirSuffix, '');
+            const wasParts = [versions.committedDistSha, committedSrcSha].filter(Boolean);
+            const nowParts = [currentSha, currentSrcSha].filter(Boolean);
+            console.log(`      ${c.red}was: ${wasParts.join(' (src: ')}${committedSrcSha ? ')' : ''}${c.reset}`);
+            console.log(`      ${c.green}now: ${nowParts.join(' (src: ')}${currentSrcSha ? ')' : ''}${c.reset}`);
+            if (distParts.length && currentSha !== distSha) {
+                console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
+            }
+        }
+        else if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
+            line(label, true, repo + subdirSuffix, '');
             console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`);
             console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
         }
         else {
             const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distDelta}` : '';
-            line('GitHub', isActive, info.config.github + subdirSuffix, activeSuffix + distSuffix);
+            line(label, isActive, repo + subdirSuffix, activeSuffix + distSuffix);
         }
     }
+    if (info.config.github) {
+        showDistLine('GitHub', info.config.github, active === 'github', versions?.github, versions?.githubVersion);
+    }
     if (info.config.gitlab) {
-        const isActive = active === 'gitlab';
-        const distParts = [versions?.gitlab, versions?.gitlabVersion].filter(Boolean);
-        const pinnedParts = isActive ? getActiveParts(info) : [];
-        const activeSuffix = isActive ? formatActiveSuffix(info) : '';
-        const distDelta = formatAheadBehind(versions?.distAheadOfPinned, versions?.pinnedAheadOfDist);
-        if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
-            line('GitLab', true, info.config.gitlab, '');
-            console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`);
-            console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
-        }
-        else {
-            const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distDelta}` : '';
-            line('GitLab', isActive, info.config.gitlab, activeSuffix + distSuffix);
-        }
+        showDistLine('GitLab', info.config.gitlab, active === 'gitlab', versions?.gitlab, versions?.gitlabVersion);
     }
     if (info.config.npm) {
         const isActive = active === 'npm';
@@ -154,6 +164,10 @@ export function buildProjectDepInfo(name, dep, projectRoot, pkg) {
     const isDev = !!(devDeps && name in devDeps);
     const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
     const gitInfo = dep.localPath ? getLocalGitInfo(resolve(projectRoot, dep.localPath)) : null;
+    const committedPkg = getCommittedPackageJson(projectRoot);
+    const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined;
+    const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
+        ? committedSrc : undefined;
     return {
         name,
         currentSource,
@@ -161,6 +175,7 @@ export function buildProjectDepInfo(name, dep, projectRoot, pkg) {
         isDev,
         version,
         gitInfo,
+        committedSource,
         config: dep,
     };
 }
@@ -187,6 +202,11 @@ export async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
     const isDev = !!(devDeps && name in devDeps);
     const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
     const gitInfo = dep.localPath ? await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath)) : null;
+    // Check if the dep specifier differs from what's committed
+    const committedPkg = getCommittedPackageJson(projectRoot);
+    const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined;
+    const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
+        ? committedSrc : undefined;
     return {
         name,
         currentSource,
@@ -194,18 +214,27 @@ export async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
         isDev,
         version,
         gitInfo,
+        committedSource,
         config: dep,
     };
 }
-export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVersion) {
+export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVersion, committedSource) {
     const distBranch = dep.distBranch ?? 'dist';
     const npmName = dep.npm ?? depName;
-    const [npmInfo, ghSha, ghPkg, glSha, glPkg] = await Promise.all([
+    // Extract the committed dist SHA if it differs from current
+    const committedDistSha = committedSource ? extractSourceSha(committedSource) : undefined;
+    const [npmInfo, ghSha, ghPkg, glSha, glPkg, committedPkg] = await Promise.all([
         getNpmInfoAsync(npmName),
         dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
         dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
         dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
         dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+        // Fetch package.json from the committed dist SHA to get its version/source info
+        committedDistSha && dep.github
+            ? fetchGitHubPackageJsonAsync(dep.github, committedDistSha).catch(() => undefined)
+            : committedDistSha && dep.gitlab
+                ? fetchGitLabPackageJsonAsync(dep.gitlab, committedDistSha).catch(() => undefined)
+                : undefined,
     ]);
     const npmVersion = npmInfo?.version;
     const npmVersions = npmInfo?.versions ?? [];
@@ -247,6 +276,7 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     if (npmVersion && latestDistVersion && baseVersion(latestDistVersion) === npmVersion) {
         npmSourceSha = parseDistSourceSha(latestDistVersion);
     }
+    const committedDistVersion = committedPkg?.version;
     return {
         npm: npmVersion,
         npmVersionsBehind,
@@ -255,6 +285,8 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
         githubVersion: ghPkg?.version,
         gitlab: glSha ? glSha.slice(0, 7) : undefined,
         gitlabVersion: glPkg?.version,
+        committedDistSha,
+        committedDistVersion,
         localAheadOfPinned,
         distAheadOfPinned,
         pinnedAheadOfDist,

@@ -6,6 +6,7 @@ export declare function formatGitInfo(info: {
 } | null): string;
 export declare function formatAheadCount(n: number | undefined): string;
 export declare function formatAheadBehind(ahead?: number, behind?: number): string;
+export declare function extractSourceSha(source: string): string | undefined;
 export declare function getActiveParts(info: DepDisplayInfo): string[];
 export declare function formatActiveSuffix(info: DepDisplayInfo): string;
 export declare function displayDep(info: DepDisplayInfo, verbose?: boolean, remoteVersions?: RemoteVersions): void;
@@ -16,6 +17,6 @@ export declare function buildGlobalDepInfoAsync(name: string, dep: DepConfig, gl
     specifier: string;
 }>): Promise<DepDisplayInfo>;
 export declare function buildProjectDepInfoAsync(name: string, dep: DepConfig, projectRoot: string, pkg: Record<string, unknown>): Promise<DepDisplayInfo>;
-export declare function fetchRemoteVersionsAsync(dep: DepConfig, depName: string, localPath?: string, pinnedVersion?: string): Promise<RemoteVersions>;
+export declare function fetchRemoteVersionsAsync(dep: DepConfig, depName: string, localPath?: string, pinnedVersion?: string, committedSource?: string): Promise<RemoteVersions>;
 export declare function fetchRemoteVersions(dep: DepConfig, depName: string): RemoteVersions;
 //# sourceMappingURL=display.d.ts.map

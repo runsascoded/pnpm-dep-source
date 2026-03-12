@@ -32,6 +32,7 @@ export interface DepDisplayInfo {
         sha: string;
         dirty: boolean;
     } | null;
+    committedSource?: string;
     config: DepConfig;
 }
 export type RemoteVersions = {
@@ -41,6 +42,8 @@ export type RemoteVersions = {
     githubVersion?: string;
     gitlab?: string;
     gitlabVersion?: string;
+    committedDistSha?: string;
+    committedDistVersion?: string;
     localAheadOfPinned?: number;
     distAheadOfPinned?: number;
     pinnedAheadOfDist?: number;

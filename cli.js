@@ -6,7 +6,7 @@ import { dirname, join, relative, resolve } from 'path';
 import { VERSION, resolveConfigPath, GLOBAL_HOOKS_DIR, HOOKS_CONFIG_FILE } from './constants.js';
 import { findProjectRoot, findWorkspaceRoot, workspaceLocalPath } from './project.js';
 import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchingDep, loadHooksConfig, saveHooksConfig } from './config.js';
-import { loadPackageJson, savePackageJson, removePnpmOverride, updatePackageJsonDep, hasDependency, addDependency, removeDependency, getCurrentSource, getInstalledVersion, getGlobalInstalledVersion, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
+import { loadPackageJson, savePackageJson, removePnpmOverride, updatePackageJsonDep, hasDependency, addDependency, removeDependency, getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
 import { resolveGitHubRef, resolveGitLabRef, getLatestNpmVersion, npmPackageExists, getLocalPackageInfo, getRemotePackageInfo, isRepoUrl, getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync, } from './remote.js';
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js';
 import { updateViteConfig, makeGitHubSpecifier, switchToLocal, switchToGitHub, switchToGitLab, cleanupDepReferences, runPnpmInstall, runGlobalInstall, } from './switch.js';
@@ -427,7 +427,16 @@ async function listDepsAsync(verbose, all, filters) {
             ? globalSourcesPromise.then(sources => Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources))))
             : Promise.resolve([]),
         verbose
-            ? Promise.all(projectEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot, dep.localPath) : undefined, getInstalledVersion(projectRoot, name) ?? undefined)))
+            ? (() => {
+                const committedPkg = getCommittedPackageJson(projectRoot);
+                return Promise.all(projectEntries.map(([name, dep]) => {
+                    const currentSrc = getCurrentSource(pkg, name);
+                    const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined;
+                    const cs = committedSrc && committedSrc !== currentSrc && committedSrc !== '(not found)'
+                        ? committedSrc : undefined;
+                    return fetchRemoteVersionsAsync(dep, name, dep.localPath ? resolve(projectRoot, dep.localPath) : undefined, getInstalledVersion(projectRoot, name) ?? undefined, cs);
+                }));
+            })()
             : Promise.resolve([]),
         verbose
             ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath, getGlobalInstalledVersion(name) ?? undefined)))
