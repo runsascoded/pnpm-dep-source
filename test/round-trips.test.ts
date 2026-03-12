@@ -310,6 +310,94 @@ export default defineConfig({
     })
   })
 
+  describe('list filters', () => {
+    it('filters deps by substring match', () => {
+      // Add a second dep
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/other-dep'] = {
+        localPath: '../other-dep',
+        github: 'test-org/other-dep',
+      }
+      writeJson(configPath, config)
+
+      // Create mock dep dir so pds doesn't error
+      const otherDepDir = join(TEST_DIR, '..', 'other-dep')
+      if (!existsSync(otherDepDir)) mkdirSync(otherDepDir, { recursive: true })
+      writeJson(join(otherDepDir, 'package.json'), { name: '@test/other-dep', version: '1.0.0' })
+      // Add to package.json
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      ;(pkg.dependencies as Record<string, string>)['@test/other-dep'] = '^1.0.0'
+      writeJson(pkgPath, pkg)
+
+      const allOutput = run('ls')
+      expect(allOutput).toContain('@test/mock-dep')
+      expect(allOutput).toContain('@test/other-dep')
+
+      const filteredOutput = run('ls mock')
+      expect(filteredOutput).toContain('@test/mock-dep')
+      expect(filteredOutput).not.toContain('@test/other-dep')
+
+      const otherFiltered = run('ls other')
+      expect(otherFiltered).not.toContain('@test/mock-dep')
+      expect(otherFiltered).toContain('@test/other-dep')
+
+      // Clean up
+      if (existsSync(otherDepDir)) rmSync(otherDepDir, { recursive: true })
+    })
+
+    it('supports multiple filter args (OR matching)', () => {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/alpha'] = { localPath: '../alpha' }
+      ;(config.dependencies as Record<string, unknown>)['@test/beta'] = { localPath: '../beta' }
+      writeJson(configPath, config)
+
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      ;(pkg.dependencies as Record<string, string>)['@test/alpha'] = '^1.0.0'
+      ;(pkg.dependencies as Record<string, string>)['@test/beta'] = '^1.0.0'
+      writeJson(pkgPath, pkg)
+
+      const output = run('ls alpha beta')
+      expect(output).toContain('@test/alpha')
+      expect(output).toContain('@test/beta')
+      expect(output).not.toContain('@test/mock-dep')
+    })
+
+    it('filter is case-insensitive', () => {
+      const output = run('ls MOCK')
+      expect(output).toContain('@test/mock-dep')
+    })
+  })
+
+  describe('list sort order', () => {
+    it('lists regular deps before devDeps', () => {
+      // Move mock-dep to devDependencies and add a regular dep
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      const deps = pkg.dependencies as Record<string, string>
+      const mockSpec = deps['@test/mock-dep']
+      delete deps['@test/mock-dep']
+      pkg.devDependencies = { '@test/mock-dep': mockSpec }
+      deps['@test/regular-dep'] = '^1.0.0'
+      writeJson(pkgPath, pkg)
+
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/regular-dep'] = { localPath: '../regular-dep' }
+      writeJson(configPath, config)
+
+      const output = run('ls')
+      const regularIdx = output.indexOf('@test/regular-dep')
+      const devIdx = output.indexOf('@test/mock-dep')
+      expect(regularIdx).toBeGreaterThan(-1)
+      expect(devIdx).toBeGreaterThan(-1)
+      expect(regularIdx).toBeLessThan(devIdx)
+    })
+  })
+
   describe('set command', () => {
     it('updates github field', () => {
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
@@ -888,6 +976,54 @@ describe('pds workspace-aware (monorepo)', () => {
       const wsContent = readFileSync(join(MONOREPO_DIR, 'pnpm-workspace.yaml'), 'utf-8')
       expect(wsContent).not.toContain('../monorepo-dep')
       expect(wsContent).toContain('packages/*')
+    })
+  })
+
+  describe('auto-subdir detection', () => {
+    // Use /tmp to avoid walking up into the project's own package.json
+    const autosubdirRoot = join('/tmp', 'pds-test-autosubdir')
+
+    afterEach(() => {
+      if (existsSync(autosubdirRoot)) rmSync(autosubdirRoot, { recursive: true })
+    })
+
+    it('auto-uses sole JS subdirectory when no package.json in cwd', () => {
+      const subDir = join(autosubdirRoot, 'myapp')
+      if (existsSync(autosubdirRoot)) rmSync(autosubdirRoot, { recursive: true })
+      mkdirSync(subDir, { recursive: true })
+
+      writeJson(join(subDir, 'package.json'), {
+        name: 'myapp',
+        version: '1.0.0',
+        dependencies: { '@test/mock-dep': '^1.0.0' },
+      })
+      writeJson(join(subDir, '.pds.json'), {
+        dependencies: {
+          '@test/mock-dep': {
+            localPath: '../../mock-dep',
+            github: 'test-org/mock-dep',
+            npm: '@test/mock-dep',
+            distBranch: 'dist',
+          },
+        },
+      })
+
+      const output = execSync(`node ${CLI_PATH} ls`, { cwd: autosubdirRoot, encoding: 'utf-8' })
+      expect(output).toContain('@test/mock-dep')
+    })
+
+    it('errors when multiple JS subdirectories exist', () => {
+      if (existsSync(autosubdirRoot)) rmSync(autosubdirRoot, { recursive: true })
+
+      for (const sub of ['app1', 'app2']) {
+        const subDir = join(autosubdirRoot, sub)
+        mkdirSync(subDir, { recursive: true })
+        writeJson(join(subDir, 'package.json'), { name: sub, version: '1.0.0' })
+      }
+
+      expect(() =>
+        execSync(`node ${CLI_PATH} ls`, { cwd: autosubdirRoot, encoding: 'utf-8' })
+      ).toThrow()
     })
   })
 

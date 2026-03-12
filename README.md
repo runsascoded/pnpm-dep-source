@@ -130,15 +130,17 @@ pds ls -av       # combined: all deps, verbose
 pds versions     # or pds v (alias for ls -v)
 ```
 
-The active source is highlighted with a green `*` prefix (plain `*` in non-TTY mode). Positional arguments filter by substring match (case-insensitive), consistent with other `pds` commands.
+The active source is highlighted with a green `*` prefix (plain `*` in non-TTY mode). Positional arguments filter by substring match (case-insensitive), consistent with other `pds` commands. Dep names are colored by type: magenta for globals, yellow for dev deps, cyan for regular deps.
+
+Sort order: global deps first, then regular deps, then dev deps (alphabetical within each group).
 
 Verbose mode (`-v`) shows:
 - Local git info (short SHA, dirty indicator)
-- `[dev]` / `[global]` tags
+- `[dev]` / `[global]` tags (colored to match dep name)
 - GitHub/GitLab dist branch SHA and version, with pinned vs latest comparison
 - Colored `+N` (green, ahead) / `-N` (red, behind) / `+M-N` indicators when pinned differs from latest
 - NPM latest version, source SHA, and version delta relative to dist
-- Global deps listed first, then project deps (alphabetical within each group)
+- Uncommitted dep changes: when a dep's source differs from `HEAD`, shows red `was:` and green `now:` sub-lines with both dist and source (main) SHAs
 
 ### Update dependency fields
 
@@ -184,6 +186,20 @@ github:user/repo#sha&path:/packages/slidev
 ```
 
 The `subdir` field is stored in `.pds.json` and can also be set manually via the config.
+
+### Auto-subdir detection
+
+If `pds` is run from a directory without a `package.json`, and exactly one immediate subdirectory contains a `package.json`, it auto-uses that subdirectory. This is convenient for projects that wrap a JS app inside a parent directory (e.g. containing Docker configs, docs, etc.):
+
+```
+my-project/
+  Dockerfile
+  myapp/           ← auto-detected
+    package.json
+    .pds.json
+```
+
+If multiple subdirectories have `package.json`, `pds` lists them and asks you to `cd` into the right one.
 
 ### Git hooks
 
