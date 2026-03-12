@@ -77,10 +77,11 @@ export function displayDep(
   verbose: boolean = false,
   remoteVersions?: RemoteVersions,
 ): void {
+  const nameColor = info.isGlobal ? c.magenta : info.isDev ? c.yellow : c.cyan
   const tag = info.isGlobal ? ` ${c.yellow}[global]${c.reset}`
     : info.isDev ? ` ${c.yellow}[dev]${c.reset}`
     : ''
-  console.log(`${c.bold}${c.cyan}${info.name}${c.reset}${tag}:`)
+  console.log(`${c.bold}${nameColor}${info.name}${c.reset}${tag}:`)
 
   const active = info.sourceType
   const versions = verbose ? (remoteVersions ?? fetchRemoteVersions(info.config, info.name)) : undefined
