@@ -481,12 +481,19 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
       : Promise.resolve([] as RemoteVersions[]),
   ])
 
-  // Display globals first, then project deps (alpha-sorted within each group)
+  // Display globals first, then project deps, then project devDeps (alpha-sorted within each group)
   const globalDeps = globalInfos.map((info, i) => ({ info, versions: globalVersions[i] }))
-  const projectDeps = projectInfos.map((info, i) => ({ info, versions: projectVersions[i] }))
-  globalDeps.sort((a, b) => a.info.name.localeCompare(b.info.name))
-  projectDeps.sort((a, b) => a.info.name.localeCompare(b.info.name))
-  for (const { info, versions } of [...globalDeps, ...projectDeps]) {
+  const projectRegular = projectInfos
+    .map((info, i) => ({ info, versions: projectVersions[i] }))
+    .filter(d => !d.info.isDev)
+  const projectDev = projectInfos
+    .map((info, i) => ({ info, versions: projectVersions[i] }))
+    .filter(d => d.info.isDev)
+  const cmp = (a: { info: DepDisplayInfo }, b: { info: DepDisplayInfo }) => a.info.name.localeCompare(b.info.name)
+  globalDeps.sort(cmp)
+  projectRegular.sort(cmp)
+  projectDev.sort(cmp)
+  for (const { info, versions } of [...globalDeps, ...projectRegular, ...projectDev]) {
     displayDep(info, verbose, versions)
   }
 }
