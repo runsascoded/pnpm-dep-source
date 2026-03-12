@@ -300,14 +300,17 @@ export async function fetchRemoteVersionsAsync(
   let localAheadOfPinned: number | undefined
   let distAheadOfPinned: number | undefined
   let pinnedAheadOfDist: number | undefined
-  if (localPath && pinnedSourceSha) {
+  // Compare local HEAD against the reference SHA: pinned source SHA if available,
+  // otherwise latest dist source SHA (e.g. when dep is in local mode)
+  const refSha = pinnedSourceSha ?? latestDistSourceSha
+  if (localPath && refSha) {
     const [localAhead, distAhead, pinnedAhead] = await Promise.all([
-      gitRevListCountAsync(localPath, pinnedSourceSha, 'HEAD').catch(() => null),
-      latestDistSourceSha && latestDistSourceSha !== pinnedSourceSha
-        ? gitRevListCountAsync(localPath, pinnedSourceSha, latestDistSourceSha).catch(() => null)
+      gitRevListCountAsync(localPath, refSha, 'HEAD').catch(() => null),
+      latestDistSourceSha && latestDistSourceSha !== refSha
+        ? gitRevListCountAsync(localPath, refSha, latestDistSourceSha).catch(() => null)
         : null,
-      latestDistSourceSha && latestDistSourceSha !== pinnedSourceSha
-        ? gitRevListCountAsync(localPath, latestDistSourceSha, pinnedSourceSha).catch(() => null)
+      latestDistSourceSha && latestDistSourceSha !== refSha
+        ? gitRevListCountAsync(localPath, latestDistSourceSha, refSha).catch(() => null)
         : null,
     ])
     if (localAhead && localAhead > 0) localAheadOfPinned = localAhead

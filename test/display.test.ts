@@ -349,6 +349,26 @@ describe('displayDep', () => {
     ])
   })
 
+  it('shows local ahead count when in local mode (vs latest dist)', () => {
+    const info = mkInfo({
+      sourceType: 'local',
+      currentSource: 'workspace:*',
+      config: { localPath: '../scrns', gitlab: 'runsascoded/js/scrns' },
+      gitInfo: { sha: 'ed7262f', dirty: true },
+    })
+    const versions: RemoteVersions = {
+      gitlab: 'c69b691',
+      gitlabVersion: '0.3.0-dist.9d846cd',
+      localAheadOfPinned: 3,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* Local: ../scrns (ed7262f dirty) +3',
+      '  GitLab: runsascoded/js/scrns (dist@c69b691; 0.3.0-dist.9d846cd)',
+    ])
+  })
+
   it('shows subdir suffix', () => {
     const info = mkInfo({
       sourceType: 'github',
