@@ -360,16 +360,21 @@ program
     }
 });
 program
-    .command('list')
+    .command('list [filters...]')
     .alias('ls')
     .description('List configured dependencies and their current sources')
     .option('-a, --all', 'Show both project and global dependencies')
     .option('-v, --verbose', 'Show available remote versions')
-    .action(async (options) => {
-    await listDepsAsync(options.verbose ?? false, options.all);
+    .action(async (filters, options) => {
+    await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined);
 });
+function filterEntries(entries, filters) {
+    if (!filters)
+        return entries;
+    return entries.filter(([name]) => filters.some(f => name.toLowerCase().includes(f.toLowerCase())));
+}
 // Helper for list/versions commands
-async function listDepsAsync(verbose, all) {
+async function listDepsAsync(verbose, all, filters) {
     const isGlobal = program.opts().global;
     // Kick off global sources fetch early (if needed)
     const globalSourcesPromise = (isGlobal || all)
@@ -381,7 +386,7 @@ async function listDepsAsync(verbose, all) {
             console.log('No global dependencies configured. Use "pds -g init <path>" to add one.');
             return;
         }
-        const entries = Object.entries(config.dependencies);
+        const entries = filterEntries(Object.entries(config.dependencies), filters);
         // Launch dep info builds and remote version fetches all concurrently
         const [infos, remoteVersions] = await Promise.all([
             globalSourcesPromise.then(sources => Promise.all(entries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))),
@@ -408,12 +413,12 @@ async function listDepsAsync(verbose, all) {
             console.log('No dependencies configured. Use "pds init <path>" to add one.');
             return;
         }
-        projectEntries = Object.entries(config.dependencies);
+        projectEntries = filterEntries(Object.entries(config.dependencies), filters);
     }
     let globalEntries = [];
     if (all) {
         const globalConfig = loadGlobalConfig();
-        globalEntries = Object.entries(globalConfig.dependencies);
+        globalEntries = filterEntries(Object.entries(globalConfig.dependencies), filters);
     }
     // Launch everything concurrently: dep info builds, global sources, and remote version fetches
     const [projectInfos, globalInfos, projectVersions, globalVersions] = await Promise.all([
@@ -428,12 +433,19 @@ async function listDepsAsync(verbose, all) {
             ? Promise.all(globalEntries.map(([name, dep]) => fetchRemoteVersionsAsync(dep, name, dep.localPath, getGlobalInstalledVersion(name) ?? undefined)))
             : Promise.resolve([]),
     ]);
-    // Display globals first, then project deps (alpha-sorted within each group)
+    // Display globals first, then project deps, then project devDeps (alpha-sorted within each group)
     const globalDeps = globalInfos.map((info, i) => ({ info, versions: globalVersions[i] }));
-    const projectDeps = projectInfos.map((info, i) => ({ info, versions: projectVersions[i] }));
-    globalDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
-    projectDeps.sort((a, b) => a.info.name.localeCompare(b.info.name));
-    for (const { info, versions } of [...globalDeps, ...projectDeps]) {
+    const projectRegular = projectInfos
+        .map((info, i) => ({ info, versions: projectVersions[i] }))
+        .filter(d => !d.info.isDev);
+    const projectDev = projectInfos
+        .map((info, i) => ({ info, versions: projectVersions[i] }))
+        .filter(d => d.info.isDev);
+    const cmp = (a, b) => a.info.name.localeCompare(b.info.name);
+    globalDeps.sort(cmp);
+    projectRegular.sort(cmp);
+    projectDev.sort(cmp);
+    for (const { info, versions } of [...globalDeps, ...projectRegular, ...projectDev]) {
         displayDep(info, verbose, versions);
     }
 }

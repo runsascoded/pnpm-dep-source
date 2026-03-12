@@ -1,6 +1,6 @@
 {
   "name": "pnpm-dep-source",
-  "version": "0.4.0-dist.c25936b",
+  "version": "0.4.0-dist.8609224",
   "description": "CLI to switch pnpm dependencies between local, GitHub, GitLab, and NPM sources",
   "type": "module",
   "bin": {
@@ -28,5 +28,8 @@
     "commander": "^13.0.0",
     "magicast": "^0.5.2"
   },
-  "exports": {}
+  "exports": {
+    ".": "./cli.js",
+    "./vite": "./vite.js"
+  }
 }
