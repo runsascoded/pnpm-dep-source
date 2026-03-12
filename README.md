@@ -28,16 +28,21 @@ pds init https://gitlab.com/user/repo
 pds init ../../path/to/local/pkg -H github-user/repo
 pds init ../../path/to/local/pkg -L gitlab-user/repo
 
+# Init from local path but activate GitHub/GitLab source
+pds init ../../path/to/local/pkg -s gh   # activate GitHub after init
+pds init ../../path/to/local/pkg -s gl   # activate GitLab after init
+pds init ../../path/to/local/pkg -s g    # auto-detect (errors if ambiguous)
+
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
 pds -g init /path/to/local/cli
 ```
 
 `init` **adds the dependency to `package.json`** if not present, then **auto-activates**:
-- Local path → switches to `workspace:*` mode
+- Local path → switches to `workspace:*` mode (unless `-s` overrides)
 - GitHub URL → switches to `github:user/repo#sha`
 - GitLab URL → switches to GitLab tarball URL
 
-Use `-D` to add as a devDependency, or `-I` to skip adding/activation entirely.
+Use `-D` to add as a devDependency, `-I` to skip adding/activation, or `-s <source>` to activate a specific source (e.g. init from a local path but immediately point at the GitHub dist branch).
 
 ### Switch to local development
 
@@ -116,18 +121,24 @@ pds s                # Alias
 ### List configured dependencies
 
 ```bash
-pds         # defaults to list
-pds list    # or pds ls
-pds ls -a   # show both project and global dependencies
-pds ls -v   # include available remote versions (npm, GitHub/GitLab dist SHA + version)
-pds ls -av  # combined: all deps, verbose
-pds versions  # or pds v (alias for ls -v)
+pds              # defaults to list
+pds list         # or pds ls
+pds ls kbd prms  # filter to deps matching any substring
+pds ls -a        # show both project and global dependencies
+pds ls -v        # include available remote versions (npm, GitHub/GitLab dist SHA + version)
+pds ls -av       # combined: all deps, verbose
+pds versions     # or pds v (alias for ls -v)
 ```
 
-The active source is highlighted with a green `*` prefix (plain `*` in non-TTY mode). Verbose mode shows:
+The active source is highlighted with a green `*` prefix (plain `*` in non-TTY mode). Positional arguments filter by substring match (case-insensitive), consistent with other `pds` commands.
+
+Verbose mode (`-v`) shows:
 - Local git info (short SHA, dirty indicator)
-- `[dev]` indicator for devDependencies
-- Remote dist branch SHA and version (for at-a-glance staleness checks)
+- `[dev]` / `[global]` tags
+- GitHub/GitLab dist branch SHA and version, with pinned vs latest comparison
+- Colored `+N` (green, ahead) / `-N` (red, behind) / `+M-N` indicators when pinned differs from latest
+- NPM latest version, source SHA, and version delta relative to dist
+- Global deps listed first, then project deps (alphabetical within each group)
 
 ### Update dependency fields
 
@@ -225,6 +236,33 @@ pds check -q         # Quiet mode (exit code only)
 pds check --hook pre-push  # Only runs if checkOn resolves to "pre-push"
 ```
 
+### Vite plugin (experimental)
+
+In some cases, `pds l` with local dependencies can cause Vite to fail to resolve peer imports across symlink boundaries — e.g. duplicate React instances (hooks crash: `Cannot read properties of null (reading 'useRef')`) or unresolved dynamic peer imports. This seems to depend on the project setup and isn't always reproducible.
+
+If you hit this, `pds` ships an experimental Vite plugin that auto-injects `resolve.alias` entries for local deps' peer dependencies. Requires `pnpm-dep-source` as a project devDependency:
+
+```bash
+pnpm add -D pnpm-dep-source
+```
+
+```ts
+// vite.config.ts
+import { pdsPlugin } from 'pnpm-dep-source/vite'
+
+export default defineConfig({
+  plugins: [react(), pdsPlugin()],
+})
+```
+
+The plugin reads `.pds.json` at startup, finds local deps' `peerDependencies`, and points each to the consumer's `node_modules/`. It's a no-op when no local deps are active, so it's safe to leave in permanently.
+
+Options:
+- `root`: project root path (default: `process.cwd()`)
+- `extra`: additional modules to alias (e.g. `['plotly.js-dist-min']` for dynamically-imported peers)
+
+See [`specs/done/vite-local-dep-aliases.md`](specs/done/vite-local-dep-aliases.md) for background on the underlying issue.
+
 ### Shell aliases
 
 ```bash
@@ -282,6 +320,7 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 - `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`npm`)
 - `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab` commands)
 - `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)
+- `-s, --source <source>`: Activate a specific source after `init` (`gh`, `gl`, `npm`, or `g` to auto-detect)
 - `-v, --verbose`: Show available remote versions (for `list`)
 
 ## Global CLI tools
