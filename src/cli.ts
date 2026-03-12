@@ -380,17 +380,24 @@ program
   })
 
 program
-  .command('list')
+  .command('list [filters...]')
   .alias('ls')
   .description('List configured dependencies and their current sources')
   .option('-a, --all', 'Show both project and global dependencies')
   .option('-v, --verbose', 'Show available remote versions')
-  .action(async (options: { all?: boolean; verbose?: boolean }) => {
-    await listDepsAsync(options.verbose ?? false, options.all)
+  .action(async (filters: string[], options: { all?: boolean; verbose?: boolean }) => {
+    await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined)
   })
 
+function filterEntries(entries: [string, DepConfig][], filters?: string[]): [string, DepConfig][] {
+  if (!filters) return entries
+  return entries.filter(([name]) =>
+    filters.some(f => name.toLowerCase().includes(f.toLowerCase()))
+  )
+}
+
 // Helper for list/versions commands
-async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
+async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]): Promise<void> {
   const isGlobal = program.opts().global
 
   // Kick off global sources fetch early (if needed)
@@ -406,7 +413,7 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
       return
     }
 
-    const entries = Object.entries(config.dependencies)
+    const entries = filterEntries(Object.entries(config.dependencies), filters)
     // Launch dep info builds and remote version fetches all concurrently
     const [infos, remoteVersions] = await Promise.all([
       globalSourcesPromise!.then(sources =>
@@ -441,13 +448,13 @@ async function listDepsAsync(verbose: boolean, all?: boolean): Promise<void> {
       return
     }
 
-    projectEntries = Object.entries(config.dependencies)
+    projectEntries = filterEntries(Object.entries(config.dependencies), filters)
   }
 
   let globalEntries: [string, DepConfig][] = []
   if (all) {
     const globalConfig = loadGlobalConfig()
-    globalEntries = Object.entries(globalConfig.dependencies)
+    globalEntries = filterEntries(Object.entries(globalConfig.dependencies), filters)
   }
 
   // Launch everything concurrently: dep info builds, global sources, and remote version fetches
