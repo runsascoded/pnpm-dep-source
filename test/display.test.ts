@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { DepConfig, DepDisplayInfo, RemoteVersions } from '../src/types.js'
 import {
-  getSourceType,
+  getSourceType, extractSourceSha,
   formatAheadCount, formatAheadBehind, formatGitInfo,
   getActiveParts, formatActiveSuffix, displayDep,
 } from '../src/display.js'
@@ -52,6 +52,24 @@ describe('parseDistSourceSha', () => {
   })
   it('returns undefined for non-dist prerelease', () => {
     expect(parseDistSourceSha('1.0.0-beta.1')).toBeUndefined()
+  })
+})
+
+describe('extractSourceSha', () => {
+  it('extracts sha from github source', () => {
+    expect(extractSourceSha('https://github.com/user/repo#abcdef1234567')).toBe('abcdef1')
+  })
+  it('extracts sha from github: prefix source', () => {
+    expect(extractSourceSha('github:user/repo#abcdef1234567')).toBe('abcdef1')
+  })
+  it('extracts sha from gitlab archive URL', () => {
+    expect(extractSourceSha('https://gitlab.com/user/repo/-/archive/abcdef1234567/repo-abcdef1234567.tar.gz')).toBe('abcdef1')
+  })
+  it('returns undefined for npm source', () => {
+    expect(extractSourceSha('^1.0.0')).toBeUndefined()
+  })
+  it('returns undefined for workspace source', () => {
+    expect(extractSourceSha('workspace:*')).toBeUndefined()
   })
 })
 
@@ -450,6 +468,91 @@ describe('displayDep', () => {
       'test-dep:',
       '* GitHub: user/repo (abc1234; 0.12.0-dist.abc1234)',
       '  NPM: test-dep (latest: 0.12.0, src: abc1234)',
+    ])
+  })
+
+  it('shows was/now sub-lines for committed → current transition on gitlab', () => {
+    const info = mkInfo({
+      sourceType: 'gitlab',
+      currentSource: 'https://gitlab.com/user/repo/-/archive/6357eb6/repo-6357eb6.tar.gz',
+      committedSource: 'https://gitlab.com/user/repo/-/archive/8ca11d0/repo-8ca11d0.tar.gz',
+      version: '0.1.0-dist.88d29d2',
+      config: { localPath: undefined, gitlab: 'user/repo' },
+    })
+    const versions: RemoteVersions = {
+      gitlab: '6357eb6',
+      gitlabVersion: '0.1.0-dist.88d29d2',
+      committedDistSha: '8ca11d0',
+      committedDistVersion: '0.1.0-dist.abc1234',
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* GitLab: user/repo',
+      '      was: 8ca11d0 (src: abc1234)',
+      '      now: 6357eb6 (src: 88d29d2)',
+    ])
+  })
+
+  it('shows was/now sub-lines for committed → current transition on github', () => {
+    const info = mkInfo({
+      sourceType: 'github',
+      currentSource: 'https://github.com/user/repo#bbb2222',
+      committedSource: 'https://github.com/user/repo#aaa1111',
+      version: '1.0.0-dist.de45678',
+      config: { localPath: undefined, github: 'user/repo' },
+    })
+    const versions: RemoteVersions = {
+      github: 'bbb2222',
+      githubVersion: '1.0.0-dist.de45678',
+      committedDistSha: 'aaa1111',
+      committedDistVersion: '1.0.0-dist.ab01234',
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* GitHub: user/repo',
+      '      was: aaa1111 (src: ab01234)',
+      '      now: bbb2222 (src: de45678)',
+    ])
+  })
+
+  it('shows latest line when current differs from dist head in transition', () => {
+    const info = mkInfo({
+      sourceType: 'github',
+      currentSource: 'https://github.com/user/repo#bbb2222',
+      committedSource: 'https://github.com/user/repo#aaa1111',
+      version: '1.0.0-dist.de45678',
+      config: { localPath: undefined, github: 'user/repo' },
+    })
+    const versions: RemoteVersions = {
+      github: 'ccc3333',
+      githubVersion: '1.0.0-dist.eee9999',
+      committedDistSha: 'aaa1111',
+      committedDistVersion: '1.0.0-dist.ab01234',
+      distAheadOfPinned: 2,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* GitHub: user/repo',
+      '      was: aaa1111 (src: ab01234)',
+      '      now: bbb2222 (src: de45678)',
+      '      latest: ccc3333; 1.0.0-dist.eee9999 +2',
+    ])
+  })
+
+  it('no transition when committedSource is undefined', () => {
+    const info = mkInfo({
+      sourceType: 'github',
+      currentSource: 'https://github.com/user/repo#abc1234',
+      version: '1.0.0',
+      config: { localPath: undefined, github: 'user/repo' },
+    })
+    displayDep(info)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* GitHub: user/repo (abc1234; 1.0.0)',
     ])
   })
 

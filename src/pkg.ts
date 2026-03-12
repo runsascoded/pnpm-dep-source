@@ -97,6 +97,27 @@ export function getCurrentSource(pkg: Record<string, unknown>, depName: string):
   return deps?.[depName] ?? devDeps?.[depName] ?? '(not found)'
 }
 
+// Read the committed (HEAD) version of package.json to detect uncommitted dep changes
+const committedPkgCache = new Map<string, Record<string, unknown> | null>()
+
+export function getCommittedPackageJson(projectRoot: string): Record<string, unknown> | null {
+  const cached = committedPkgCache.get(projectRoot)
+  if (cached !== undefined) return cached
+  try {
+    const result = spawnSync('git', ['-C', projectRoot, 'show', 'HEAD:package.json'], { encoding: 'utf-8' })
+    if (result.status !== 0) {
+      committedPkgCache.set(projectRoot, null)
+      return null
+    }
+    const pkg = JSON.parse(result.stdout)
+    committedPkgCache.set(projectRoot, pkg)
+    return pkg
+  } catch {
+    committedPkgCache.set(projectRoot, null)
+    return null
+  }
+}
+
 export function getInstalledVersion(projectRoot: string, depName: string): string | null {
   const pkgPath = join(projectRoot, 'node_modules', depName, 'package.json')
   if (!existsSync(pkgPath)) {

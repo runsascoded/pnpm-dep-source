@@ -34,6 +34,7 @@ export interface DepDisplayInfo {
   isGlobal?: boolean           // Whether it's a global dependency
   version?: string             // Installed version from node_modules
   gitInfo?: { sha: string; dirty: boolean } | null
+  committedSource?: string     // Source from HEAD (when different from working tree)
   config: DepConfig
 }
 
@@ -41,6 +42,8 @@ export type RemoteVersions = {
   npm?: string; npmSourceSha?: string
   github?: string; githubVersion?: string
   gitlab?: string; gitlabVersion?: string
+  committedDistSha?: string     // dist SHA from committed (HEAD) package.json
+  committedDistVersion?: string // version from committed dist SHA's package.json
   localAheadOfPinned?: number   // commits in local HEAD not in pinned source
   distAheadOfPinned?: number    // commits in latest dist source not in pinned source
   pinnedAheadOfDist?: number    // commits in pinned source not in latest dist (diverged)
