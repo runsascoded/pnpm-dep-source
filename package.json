@@ -7,6 +7,10 @@
     "pnpm-dep-source": "./dist/cli.js",
     "pds": "./dist/cli.js"
   },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./vite": "./dist/vite.js"
+  },
   "files": [
     "dist"
   ],
