@@ -14,7 +14,13 @@ program
     .name('pnpm-dep-source')
     .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
     .version(VERSION)
-    .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools');
+    .option('-C, --dir <path>', 'Run as if started in <path> (like git -C)')
+    .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools')
+    .hook('preAction', () => {
+    const dir = program.opts().dir;
+    if (dir)
+        process.chdir(resolve(dir));
+});
 program
     .command('init [path-or-url]')
     .description('Initialize (or reinitialize) a dependency from local path or repo URL and activate it. Re-running init on an existing dep refreshes its config from the local package.json.')
@@ -1170,12 +1176,51 @@ program
 });
 // Default to 'list' if deps configured, otherwise show help
 // Also handle `pds -g` as shorthand for `pds -g ls`
-const hasOnlyGlobalFlag = process.argv.length === 3 && (process.argv[2] === '-g' || process.argv[2] === '--global');
-if (process.argv.length <= 2 || hasOnlyGlobalFlag) {
+// Pre-parse -C/--dir before default command detection, since commander hasn't run yet
+function extractDir(arg, nextArg) {
+    if (arg === '-C' || arg === '--dir') {
+        return nextArg ? { dir: nextArg, consumesNext: true } : null;
+    }
+    const eqMatch = arg.match(/^(?:-C|--dir)=(.+)$/);
+    if (eqMatch)
+        return { dir: eqMatch[1], consumesNext: false };
+    // -Cwww (combined short option + value)
+    if (arg.startsWith('-C') && arg.length > 2)
+        return { dir: arg.slice(2), consumesNext: false };
+    return null;
+}
+function preParseDir() {
+    for (let i = 2; i < process.argv.length; i++) {
+        const result = extractDir(process.argv[i], process.argv[i + 1]);
+        if (result) {
+            process.chdir(resolve(result.dir));
+            return;
+        }
+    }
+}
+function argsWithoutFlags() {
+    const skip = new Set(['-g', '--global']);
+    const result = [];
+    for (let i = 2; i < process.argv.length; i++) {
+        if (skip.has(process.argv[i]))
+            continue;
+        const dirResult = extractDir(process.argv[i], process.argv[i + 1]);
+        if (dirResult) {
+            if (dirResult.consumesNext)
+                i++;
+            continue;
+        }
+        result.push(process.argv[i]);
+    }
+    return result;
+}
+preParseDir();
+const nonFlagArgs = argsWithoutFlags();
+const hasGlobalFlag = process.argv.slice(2).some(a => a === '-g' || a === '--global');
+if (nonFlagArgs.length === 0) {
     // Check if there are any deps configured
-    const isGlobal = hasOnlyGlobalFlag;
     try {
-        if (isGlobal) {
+        if (hasGlobalFlag) {
             const config = loadGlobalConfig();
             if (Object.keys(config.dependencies).length > 0) {
                 process.argv.push('list');
