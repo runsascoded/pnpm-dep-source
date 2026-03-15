@@ -7,7 +7,7 @@ const tmpDir = join(import.meta.dirname, 'tmp-vite-plugin')
 
 function setupProject(opts: {
   pdsConfig?: Record<string, unknown>
-  localDeps?: Record<string, { peerDependencies?: Record<string, string> }>
+  localDeps?: Record<string, Record<string, unknown>>
   installedModules?: string[]
 }) {
   mkdirSync(tmpDir, { recursive: true })
@@ -81,7 +81,6 @@ describe('pdsPlugin', () => {
   })
 
   it('adds react/jsx-runtime alias for react peer', () => {
-    // Also create the jsx-runtime subpath
     const jsxDir = join(tmpDir, 'node_modules', 'react', 'jsx-runtime')
     setupProject({
       pdsConfig: {
@@ -191,5 +190,127 @@ describe('pdsPlugin', () => {
     expect(result!.resolve.alias['plotly.js-dist-min']).toBe(
       join(tmpDir, 'node_modules', 'plotly.js-dist-min')
     )
+  })
+
+  describe('CJS compat', () => {
+    it('includes local deps in optimizeDeps.include', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'my-dep': { localPath: 'my-dep' },
+          },
+        },
+        localDeps: {
+          'my-dep': { peerDependencies: {} },
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.optimizeDeps).toEqual({ include: ['my-dep'] })
+    })
+
+    it('includes multiple local deps in optimizeDeps.include', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'dep-a': { localPath: 'dep-a' },
+            'dep-b': { localPath: 'dep-b' },
+            'dep-c': { github: 'user/repo' },
+          },
+        },
+        localDeps: {
+          'dep-a': {},
+          'dep-b': {},
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.optimizeDeps!.include).toEqual(['dep-a', 'dep-b'])
+    })
+
+    it('defines global shim for CJS local deps (no type field)', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'my-dep': { localPath: 'my-dep' },
+          },
+        },
+        localDeps: {
+          'my-dep': {},
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.define).toEqual({ global: 'globalThis' })
+    })
+
+    it('defines global shim when type is "commonjs"', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'my-dep': { localPath: 'my-dep' },
+          },
+        },
+        localDeps: {
+          'my-dep': { type: 'commonjs' },
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.define).toEqual({ global: 'globalThis' })
+    })
+
+    it('skips global shim when all local deps are ESM', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'my-dep': { localPath: 'my-dep' },
+          },
+        },
+        localDeps: {
+          'my-dep': { type: 'module' },
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.define).toBeUndefined()
+    })
+
+    it('defines global shim when at least one local dep is CJS', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'esm-dep': { localPath: 'esm-dep' },
+            'cjs-dep': { localPath: 'cjs-dep' },
+          },
+        },
+        localDeps: {
+          'esm-dep': { type: 'module' },
+          'cjs-dep': {},
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeDefined()
+      expect(result!.define).toEqual({ global: 'globalThis' })
+    })
+
+    it('does not set optimizeDeps or define when no local deps', () => {
+      setupProject({
+        pdsConfig: {
+          dependencies: {
+            'my-dep': { github: 'user/repo' },
+          },
+        },
+      })
+      const plugin = pdsPlugin({ root: tmpDir })
+      const result = plugin.config()
+      expect(result).toBeUndefined()
+    })
   })
 })

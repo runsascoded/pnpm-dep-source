@@ -10,13 +10,27 @@ interface PdsVitePluginOptions {
   extra?: string[]
 }
 
+interface LocalDepInfo {
+  name: string
+  localPath: string
+  pkg: Record<string, unknown>
+  isCJS: boolean
+}
+
+interface PdsPluginConfig {
+  resolve: { alias: Record<string, string> }
+  optimizeDeps?: { include: string[] }
+  define?: Record<string, string>
+}
+
 /**
- * Vite plugin that auto-manages resolve aliases for pds local deps' peer dependencies.
- * Prevents duplicate React instances and unresolved peer imports across symlink boundaries.
+ * Vite plugin that auto-manages resolve aliases, optimizeDeps, and CJS compat
+ * for pds local deps. Prevents duplicate React instances, unresolved peer imports
+ * across symlink boundaries, and CJS require() failures in the browser.
  */
 export function pdsPlugin(options?: PdsVitePluginOptions): {
   name: string
-  config: () => { resolve: { alias: Record<string, string> } } | undefined
+  config: () => PdsPluginConfig | undefined
 } {
   const root = options?.root ?? process.cwd()
   return {
@@ -31,18 +45,24 @@ export function pdsPlugin(options?: PdsVitePluginOptions): {
         return undefined
       }
       if (!config.dependencies) return undefined
+
       const aliases: Record<string, string> = {}
-      for (const [, dep] of Object.entries(config.dependencies)) {
+      const localDeps: LocalDepInfo[] = []
+
+      for (const [name, dep] of Object.entries(config.dependencies)) {
         if (!dep.localPath) continue
         const localPkgPath = resolve(root, dep.localPath, 'package.json')
         if (!existsSync(localPkgPath)) continue
-        let localPkg: { peerDependencies?: Record<string, string> }
+        let localPkg: Record<string, unknown>
         try {
           localPkg = JSON.parse(readFileSync(localPkgPath, 'utf-8'))
         } catch {
           continue
         }
-        const peers = Object.keys(localPkg.peerDependencies ?? {})
+        const isCJS = !localPkg.type || localPkg.type !== 'module'
+        localDeps.push({ name, localPath: dep.localPath, pkg: localPkg, isCJS })
+
+        const peers = Object.keys((localPkg.peerDependencies ?? {}) as Record<string, string>)
         for (const peer of peers) {
           const resolved = resolve(root, 'node_modules', peer)
           if (!existsSync(resolved)) continue
@@ -61,6 +81,7 @@ export function pdsPlugin(options?: PdsVitePluginOptions): {
           }
         }
       }
+
       if (options?.extra) {
         for (const mod of options.extra) {
           const resolved = resolve(root, 'node_modules', mod)
@@ -69,8 +90,24 @@ export function pdsPlugin(options?: PdsVitePluginOptions): {
           }
         }
       }
-      if (Object.keys(aliases).length === 0) return undefined
-      return { resolve: { alias: aliases } }
+
+      if (localDeps.length === 0 && Object.keys(aliases).length === 0) return undefined
+
+      const result: PdsPluginConfig = { resolve: { alias: aliases } }
+
+      // Auto-include local deps in optimizeDeps so Vite pre-bundles them (CJS→ESM)
+      if (localDeps.length > 0) {
+        result.optimizeDeps = { include: localDeps.map(d => d.name) }
+      }
+
+      // Auto-define Node.js globals for CJS local deps
+      if (localDeps.some(d => d.isCJS)) {
+        result.define = {
+          global: 'globalThis',
+        }
+      }
+
+      return result
     },
   }
 }

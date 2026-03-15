@@ -271,13 +271,18 @@ export default defineConfig({
 })
 ```
 
-The plugin reads `.pds.json` at startup, finds local deps' `peerDependencies`, and points each to the consumer's `node_modules/`. It's a no-op when no local deps are active, so it's safe to leave in permanently.
+The plugin reads `.pds.json` at startup and, for each local dep:
+- Resolves `peerDependencies` to the consumer's `node_modules/` (prevents duplicate React, etc.)
+- Adds the dep to `optimizeDeps.include` (pre-bundles CJS→ESM so `require()` works in the browser)
+- Defines `global: 'globalThis'` when any local dep is CJS (no `"type": "module"`)
+
+It's a no-op when no local deps are active, so it's safe to leave in permanently.
 
 Options:
 - `root`: project root path (default: `process.cwd()`)
 - `extra`: additional modules to alias (e.g. `['plotly.js-dist-min']` for dynamically-imported peers)
 
-See [`specs/done/vite-local-dep-aliases.md`](specs/done/vite-local-dep-aliases.md) for background on the underlying issue.
+See [`specs/done/vite-local-dep-aliases.md`](specs/done/vite-local-dep-aliases.md) and [`specs/done/vite-cjs-compat.md`](specs/done/vite-cjs-compat.md) for background.
 
 ### Shell aliases
 
@@ -321,6 +326,7 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 
 ### Top-level options
 
+- `-C, --dir <path>`: Run as if started in `<path>` (like `git -C`). Works with all commands: `pds -C www ls`, `pds -Cwww`, `pdlv -C api`, etc.
 - `-g, --global`: Use global config (`~/.config/pnpm-dep-source/config.json`) for CLI tools. Must come before the command: `pds -g ls`, `pds -g gh`, etc.
 
 ### Command options
