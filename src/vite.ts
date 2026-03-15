@@ -28,11 +28,9 @@ interface PdsPluginConfig {
  * for pds local deps. Prevents duplicate React instances, unresolved peer imports
  * across symlink boundaries, and CJS require() failures in the browser.
  */
-export function pdsPlugin(options?: PdsVitePluginOptions): {
-  name: string
-  config: () => PdsPluginConfig | undefined
-} {
+export function pdsPlugin(options?: PdsVitePluginOptions) {
   const root = options?.root ?? process.cwd()
+
   return {
     name: 'pds-resolve',
     config() {
@@ -95,9 +93,37 @@ export function pdsPlugin(options?: PdsVitePluginOptions): {
 
       const result: PdsPluginConfig = { resolve: { alias: aliases } }
 
-      // Auto-include local deps in optimizeDeps so Vite pre-bundles them (CJS→ESM)
-      if (localDeps.length > 0) {
-        result.optimizeDeps = { include: localDeps.map(d => d.name) }
+      // Auto-include local deps in optimizeDeps (CJS→ESM pre-bundling)
+      // Skip pnpm-dep-source itself (build-time dep, not runtime)
+      const runtimeDeps = localDeps.filter(d => d.name !== 'pnpm-dep-source')
+      if (runtimeDeps.length > 0) {
+        const includes: string[] = runtimeDeps.map(d => d.name)
+        // For CJS local deps with exports maps, also include raw internal paths
+        // for each exported subpath (Vite's optimizer can't resolve clean export
+        // names like "plotly.js/basic" for symlinked deps, but CAN resolve raw
+        // paths like "plotly.js/lib/index-basic.js")
+        for (const dep of runtimeDeps) {
+          if (!dep.isCJS) continue
+          const pkgExports = dep.pkg.exports as Record<string, unknown> | undefined
+          if (!pkgExports) continue
+          for (const [key, target] of Object.entries(pkgExports)) {
+            if (key === '.' || key.includes('*')) continue
+            let targetPath: string | undefined
+            if (typeof target === 'string') targetPath = target
+            else if (target && typeof target === 'object') {
+              const cond = target as Record<string, string>
+              targetPath = cond.import ?? cond.require ?? cond.default
+            }
+            if (!targetPath) continue
+            const rawPath = targetPath.replace(/^\.\//, '')
+            includes.push(`${dep.name}/${rawPath}`)
+            // Also include without .js extension (import specifiers often omit it)
+            if (rawPath.endsWith('.js')) {
+              includes.push(`${dep.name}/${rawPath.slice(0, -3)}`)
+            }
+          }
+        }
+        result.optimizeDeps = { include: includes }
       }
 
       // Auto-define Node.js globals for CJS local deps
