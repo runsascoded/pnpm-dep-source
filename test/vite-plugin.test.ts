@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, writeFileSync, rmSync } from 'fs'
-import { join } from 'path'
+import { mkdirSync, symlinkSync, writeFileSync, rmSync } from 'fs'
+import { join, resolve } from 'path'
 import { pdsPlugin } from '../src/vite.js'
 
 const tmpDir = join(import.meta.dirname, 'tmp-vite-plugin')
@@ -26,6 +26,16 @@ function setupProject(opts: {
       const modDir = join(tmpDir, 'node_modules', mod)
       mkdirSync(modDir, { recursive: true })
       writeFileSync(join(modDir, 'package.json'), JSON.stringify({ name: mod }))
+    }
+  }
+  // Create node_modules symlinks for local deps (so realpath check passes)
+  if (opts.pdsConfig?.dependencies && opts.localDeps) {
+    const deps = opts.pdsConfig.dependencies as Record<string, { localPath?: string }>
+    for (const [name, dep] of Object.entries(deps)) {
+      if (!dep.localPath) continue
+      const nmDir = join(tmpDir, 'node_modules', name)
+      mkdirSync(join(tmpDir, 'node_modules'), { recursive: true })
+      symlinkSync(resolve(tmpDir, dep.localPath), nmDir)
     }
   }
 }
