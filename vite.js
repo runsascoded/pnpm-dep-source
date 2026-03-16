@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import { CONFIG_FILES } from './constants.js';
 /**
@@ -31,6 +31,19 @@ export function pdsPlugin(options) {
                 const localPkgPath = resolve(root, dep.localPath, 'package.json');
                 if (!existsSync(localPkgPath))
                     continue;
+                // Check if the dep is actually installed as local (symlink points to localPath)
+                // vs GH/npm dist (localPath exists in config but isn't active)
+                // Verify dep is actually installed as local (symlink → localPath)
+                // If switched to GH/npm dist, localPath exists in config but isn't active
+                try {
+                    const installedReal = realpathSync(resolve(root, 'node_modules', name));
+                    const localReal = realpathSync(resolve(root, dep.localPath));
+                    if (!installedReal.startsWith(localReal))
+                        continue;
+                }
+                catch {
+                    continue;
+                }
                 let localPkg;
                 try {
                     localPkg = JSON.parse(readFileSync(localPkgPath, 'utf-8'));
