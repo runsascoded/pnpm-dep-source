@@ -389,9 +389,10 @@ program
   .alias('ls')
   .description('List configured dependencies and their current sources')
   .option('-a, --all', 'Show both project and global dependencies')
+  .option('-s, --source <type>', 'Filter by active source type (local, github/gh, gitlab/gl, npm)')
   .option('-v, --verbose', 'Show available remote versions')
-  .action(async (filters: string[], options: { all?: boolean; verbose?: boolean }) => {
-    await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined)
+  .action(async (filters: string[], options: { all?: boolean; source?: string; verbose?: boolean }) => {
+    await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined, options.source)
   })
 
 function filterEntries(entries: [string, DepConfig][], filters?: string[]): [string, DepConfig][] {
@@ -401,8 +402,22 @@ function filterEntries(entries: [string, DepConfig][], filters?: string[]): [str
   )
 }
 
+function normalizeSourceFilter(s: string): DepDisplayInfo['sourceType'] | undefined {
+  const lower = s.toLowerCase()
+  if (lower === 'local' || lower === 'l') return 'local'
+  if (lower === 'github' || lower === 'gh') return 'github'
+  if (lower === 'gitlab' || lower === 'gl') return 'gitlab'
+  if (lower === 'npm' || lower === 'n') return 'npm'
+  return undefined
+}
+
 // Helper for list/versions commands
-async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]): Promise<void> {
+async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[], sourceFilter?: string): Promise<void> {
+  const sourceType = sourceFilter ? normalizeSourceFilter(sourceFilter) : undefined
+  if (sourceFilter && !sourceType) {
+    console.error(`Unknown source type: ${sourceFilter}. Use: local, github/gh, gitlab/gl, npm`)
+    process.exit(1)
+  }
   const isGlobal = program.opts().global
 
   // Kick off global sources fetch early (if needed)
@@ -431,7 +446,8 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
         : Promise.resolve([] as RemoteVersions[]),
     ])
 
-    const indexed = infos.map((info, i) => ({ info, versions: remoteVersions[i] }))
+    let indexed = infos.map((info, i) => ({ info, versions: remoteVersions[i] }))
+    if (sourceType) indexed = indexed.filter(d => d.info.sourceType === sourceType)
     indexed.sort((a, b) => a.info.name.localeCompare(b.info.name))
     for (const { info, versions } of indexed) {
       displayDep(info, verbose, versions)
@@ -495,13 +511,16 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
   ])
 
   // Display globals first, then project deps, then project devDeps (alpha-sorted within each group)
-  const globalDeps = globalInfos.map((info, i) => ({ info, versions: globalVersions[i] }))
+  const srcFilter = (d: { info: DepDisplayInfo }) => !sourceType || d.info.sourceType === sourceType
+  const globalDeps = globalInfos.map((info, i) => ({ info, versions: globalVersions[i] })).filter(srcFilter)
   const projectRegular = projectInfos
     .map((info, i) => ({ info, versions: projectVersions[i] }))
     .filter(d => !d.info.isDev)
+    .filter(srcFilter)
   const projectDev = projectInfos
     .map((info, i) => ({ info, versions: projectVersions[i] }))
     .filter(d => d.info.isDev)
+    .filter(srcFilter)
   const cmp = (a: { info: DepDisplayInfo }, b: { info: DepDisplayInfo }) => a.info.name.localeCompare(b.info.name)
   globalDeps.sort(cmp)
   projectRegular.sort(cmp)
@@ -1283,6 +1302,7 @@ alias pdid='pds init -D'  # init as devDependency
 alias pdsi='pds init'  # init (alt)
 alias pdl='pds ls'     # list
 alias pdla='pds ls -a' # list all (project + global)
+alias pdll='pds ls -s local'  # list local deps only
 alias pdlv='pds ls -v'    # list with versions
 alias pdlav='pds ls -av'  # list all with versions
 alias pdlg='pds -g ls'   # global list

@@ -372,6 +372,37 @@ export default defineConfig({
     })
   })
 
+  describe('list source filter', () => {
+    it('shows only local deps with -s local', () => {
+      // Default state: mock-dep is at ^1.0.0 (npm source)
+      const output = run('ls -s local')
+      expect(output).not.toContain('@test/mock-dep')
+
+      // Switch to local
+      run('local mock-dep -I')
+      const localOutput = run('ls -s local')
+      expect(localOutput).toContain('@test/mock-dep')
+    })
+
+    it('shows only github deps with -s gh', () => {
+      run('github mock-dep -R main -I')
+      const ghOutput = run('ls -s gh')
+      expect(ghOutput).toContain('@test/mock-dep')
+
+      const localOutput = run('ls -s local')
+      expect(localOutput).not.toContain('@test/mock-dep')
+    })
+
+    it('shows only npm deps with -s npm', () => {
+      run('npm mock-dep 2.0.0 -I')
+      const npmOutput = run('ls -s npm')
+      expect(npmOutput).toContain('@test/mock-dep')
+
+      const ghOutput = run('ls -s gh')
+      expect(ghOutput).not.toContain('@test/mock-dep')
+    })
+  })
+
   describe('list sort order', () => {
     it('lists regular deps before devDeps', () => {
       // Move mock-dep to devDependencies and add a regular dep

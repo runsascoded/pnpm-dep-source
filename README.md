@@ -125,6 +125,8 @@ pds              # defaults to list
 pds list         # or pds ls
 pds ls kbd prms  # filter to deps matching any substring
 pds ls -a        # show both project and global dependencies
+pds ls -s local  # show only local deps (useful before pushing)
+pds ls -s gh     # show only GitHub-pinned deps (also: gl, npm)
 pds ls -v        # include available remote versions (npm, GitHub/GitLab dist SHA + version)
 pds ls -av       # combined: all deps, verbose
 pds versions     # or pds v (alias for ls -v)
@@ -290,7 +292,7 @@ See [`specs/done/vite-local-dep-aliases.md`](specs/done/vite-local-dep-aliases.m
 eval "$(pds shell-integration)"   # Add to .bashrc/.zshrc
 ```
 
-Provides aliases like `pdl` (list), `pdla` (list all), `pdlv` (list verbose), `pdgh` (github), `pdgl` (gitlab), `pdsn` (npm), `pdg` (global mode), etc. Run `pds shell-integration` to see the full list.
+Provides aliases like `pdl` (list), `pdla` (list all), `pdll` (list local only), `pdlv` (list verbose), `pdgh` (github), `pdgl` (gitlab), `pdsn` (npm), `pdg` (global mode), etc. Run `pds shell-integration` to see the full list.
 
 ### Show pds info
 
