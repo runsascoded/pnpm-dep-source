@@ -87,8 +87,9 @@ export function pdsPlugin(options) {
             // Auto-include local deps in optimizeDeps (CJS→ESM pre-bundling)
             // Skip pnpm-dep-source itself (build-time dep, not runtime)
             const runtimeDeps = localDeps.filter(d => d.name !== 'pnpm-dep-source');
-            if (runtimeDeps.length > 0) {
-                const includes = runtimeDeps.map(d => d.name);
+            const cjsDeps = runtimeDeps.filter(d => d.isCJS);
+            if (cjsDeps.length > 0) {
+                const includes = cjsDeps.map(d => d.name);
                 // For CJS local deps with exports maps, also include raw internal paths
                 // for each exported subpath (Vite's optimizer can't resolve clean export
                 // names like "plotly.js/basic" for symlinked deps, but CAN resolve raw
