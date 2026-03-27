@@ -12,7 +12,7 @@ import {
   fetchGitHubPackageJson, fetchGitLabPackageJson,
   fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync,
   getLatestNpmVersion,
-  getNpmInfoAsync, countNpmVersionsBetween, baseVersion,
+  getNpmInfoAsync, baseVersion,
 } from './remote.js'
 
 export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'npm' | 'unknown' {
@@ -153,10 +153,9 @@ export function displayDep(
     // In verbose mode, omit NPM line if no published version exists and npm isn't the active source
     if (verbose && !isActive && !versions?.npm) return
     const activeSuffix = isActive ? formatActiveSuffix(info) : ''
-    const npmDelta = formatAheadCount(versions?.npmVersionsBehind)
-    const npmDeltaSuffix = npmDelta ? ` ${npmDelta}` : ''
+    const npmDelta = formatAheadBehind(versions?.npmAheadOfDist, versions?.distAheadOfNpm)
     const shaSuffix = versions?.npmSourceSha ? `, src: ${versions.npmSourceSha.slice(0, 7)}` : ''
-    const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm}${shaSuffix})${c.reset}${npmDeltaSuffix}` : ''
+    const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm}${shaSuffix})${c.reset}${npmDelta}` : ''
     line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix)
   }
 }
@@ -291,7 +290,6 @@ export async function fetchRemoteVersionsAsync(
         : undefined,
   ])
   const npmVersion = npmInfo?.version
-  const npmVersions = npmInfo?.versions ?? []
 
   const latestDistVersion = (ghPkg?.version ?? glPkg?.version) as string | undefined
   const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined
@@ -318,16 +316,6 @@ export async function fetchRemoteVersionsAsync(
     if (pinnedAhead && pinnedAhead > 0) pinnedAheadOfDist = pinnedAhead
   }
 
-  // Count npm versions between the best-known version and latest npm.
-  // Use latest dist base version if available (answers "is npm up-to-date with dist?"),
-  // otherwise fall back to installed base version.
-  let npmVersionsBehind: number | undefined
-  const bestKnownVersion = latestDistVersion ?? pinnedVersion
-  if (npmVersion && bestKnownVersion && npmVersions.length > 0) {
-    const bestBase = baseVersion(bestKnownVersion)
-    npmVersionsBehind = countNpmVersionsBetween(npmVersions, bestBase, npmVersion)
-  }
-
   // Find the source SHA that the latest npm version corresponds to.
   // If a dist version's base matches the latest npm version, use its source SHA.
   let npmSourceSha: string | undefined
@@ -335,11 +323,24 @@ export async function fetchRemoteVersionsAsync(
     npmSourceSha = parseDistSourceSha(latestDistVersion)
   }
 
+  // Compute commit distance between npm source and latest dist source
+  let npmAheadOfDist: number | undefined
+  let distAheadOfNpm: number | undefined
+  if (localPath && npmSourceSha && latestDistSourceSha && npmSourceSha !== latestDistSourceSha) {
+    const [npmAhead, distAhead] = await Promise.all([
+      gitRevListCountAsync(localPath, latestDistSourceSha, npmSourceSha).catch(() => null),
+      gitRevListCountAsync(localPath, npmSourceSha, latestDistSourceSha).catch(() => null),
+    ])
+    if (npmAhead && npmAhead > 0) npmAheadOfDist = npmAhead
+    if (distAhead && distAhead > 0) distAheadOfNpm = distAhead
+  }
+
   const committedDistVersion = committedPkg?.version as string | undefined
 
   return {
     npm: npmVersion,
-    npmVersionsBehind,
+    npmAheadOfDist,
+    distAheadOfNpm,
     npmSourceSha,
     github: ghSha ? ghSha.slice(0, 7) : undefined,
     githubVersion: ghPkg?.version as string | undefined,

@@ -416,17 +416,6 @@ export function getNpmInfoAsync(packageName: string): Promise<{ version: string;
   return promise
 }
 
-// Count published npm versions strictly after `from` up to and including `to`.
-// Returns undefined if either version is not found in the list.
-export function countNpmVersionsBetween(versions: string[], from: string, to: string): number | undefined {
-  if (from === to) return 0
-  const fromIdx = versions.indexOf(from)
-  const toIdx = versions.indexOf(to)
-  if (fromIdx < 0 || toIdx < 0) return undefined
-  if (toIdx <= fromIdx) return undefined
-  return toIdx - fromIdx
-}
-
 // Strip pre-release/dist suffixes to get the base semver: "1.2.3-dist.abc" → "1.2.3"
 export function baseVersion(version: string): string {
   const match = version.match(/^(\d+\.\d+\.\d+)/)

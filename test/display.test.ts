@@ -5,7 +5,7 @@ import {
   formatAheadCount, formatAheadBehind, formatGitInfo,
   getActiveParts, formatActiveSuffix, displayDep,
 } from '../src/display.js'
-import { parseDistSourceSha, countNpmVersionsBetween, baseVersion } from '../src/remote.js'
+import { parseDistSourceSha, baseVersion } from '../src/remote.js'
 
 // In non-TTY (test) mode, all ANSI codes are empty strings,
 // so output is plain text — no stripping needed.
@@ -124,29 +124,6 @@ describe('baseVersion', () => {
   })
   it('strips any pre-release suffix', () => {
     expect(baseVersion('2.0.0-beta.1')).toBe('2.0.0')
-  })
-})
-
-describe('countNpmVersionsBetween', () => {
-  const versions = ['0.8.0', '0.9.0', '0.10.0', '0.11.0', '0.12.0']
-
-  it('returns 0 when from === to', () => {
-    expect(countNpmVersionsBetween(versions, '0.10.0', '0.10.0')).toBe(0)
-  })
-  it('counts versions between', () => {
-    expect(countNpmVersionsBetween(versions, '0.10.0', '0.12.0')).toBe(2)
-  })
-  it('returns undefined when from not found', () => {
-    expect(countNpmVersionsBetween(versions, '0.7.0', '0.12.0')).toBeUndefined()
-  })
-  it('returns undefined when to not found', () => {
-    expect(countNpmVersionsBetween(versions, '0.10.0', '0.13.0')).toBeUndefined()
-  })
-  it('returns undefined when to is before from', () => {
-    expect(countNpmVersionsBetween(versions, '0.12.0', '0.10.0')).toBeUndefined()
-  })
-  it('counts single version gap', () => {
-    expect(countNpmVersionsBetween(versions, '0.11.0', '0.12.0')).toBe(1)
   })
 })
 
@@ -433,7 +410,7 @@ describe('displayDep', () => {
     ])
   })
 
-  it('shows npm versions behind count', () => {
+  it('shows npm behind dist (dist ahead of npm)', () => {
     const info = mkInfo({
       sourceType: 'npm',
       currentSource: '^0.10.0',
@@ -442,12 +419,30 @@ describe('displayDep', () => {
     })
     const versions: RemoteVersions = {
       npm: '0.12.0',
-      npmVersionsBehind: 5,
+      distAheadOfNpm: 5,
     }
     displayDep(info, true, versions)
     expect(logs).toEqual([
       'test-dep:',
-      '* NPM: test-dep (0.10.0) (latest: 0.12.0) +5',
+      '* NPM: test-dep (0.10.0) (latest: 0.12.0) -5',
+    ])
+  })
+
+  it('shows npm ahead of dist', () => {
+    const info = mkInfo({
+      sourceType: 'npm',
+      currentSource: '^0.10.0',
+      version: '0.10.0',
+      config: { localPath: undefined, npm: 'test-dep' },
+    })
+    const versions: RemoteVersions = {
+      npm: '0.12.0',
+      npmAheadOfDist: 3,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '* NPM: test-dep (0.10.0) (latest: 0.12.0) +3',
     ])
   })
 
@@ -460,7 +455,6 @@ describe('displayDep', () => {
     })
     const versions: RemoteVersions = {
       npm: '0.12.0',
-      npmVersionsBehind: 0,
     }
     displayDep(info, true, versions)
     expect(logs).toEqual([
@@ -479,7 +473,6 @@ describe('displayDep', () => {
     const versions: RemoteVersions = {
       npm: '0.12.0',
       npmSourceSha: 'abc1234def5678',
-      npmVersionsBehind: 0,
       github: 'abc1234',
       githubVersion: '0.12.0-dist.abc1234',
     }
