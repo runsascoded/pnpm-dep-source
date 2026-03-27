@@ -89,6 +89,23 @@ export async function gitRevListCountAsync(
   }
 }
 
+// Resolve an npm version to a git SHA via local tags (tries v1.2.3 then 1.2.3)
+export async function resolveVersionTagAsync(
+  repoPath: string,
+  version: string,
+): Promise<string | undefined> {
+  for (const tag of [`v${version}`, version]) {
+    try {
+      const result = await spawnAsync(
+        'git', ['-C', repoPath, 'rev-parse', '--verify', `${tag}^{commit}`],
+        { encoding: 'utf-8' },
+      )
+      if (result.status === 0) return result.stdout.trim()
+    } catch {}
+  }
+  return undefined
+}
+
 export function resolveGitHubRef(repo: string, ref: string): string {
   // Use gh api to resolve ref to SHA from GitHub
   const result = spawnSync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], {

@@ -6,7 +6,7 @@ import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlob
 import {
   getLocalGitInfo, getLocalGitInfoAsync,
   getGlobalInstallSource,
-  parseDistSourceSha, gitRevListCountAsync,
+  parseDistSourceSha, gitRevListCountAsync, resolveVersionTagAsync,
   resolveGitHubRef, resolveGitLabRef,
   resolveGitHubRefAsync, resolveGitLabRefAsync,
   fetchGitHubPackageJson, fetchGitLabPackageJson,
@@ -317,19 +317,25 @@ export async function fetchRemoteVersionsAsync(
   }
 
   // Find the source SHA that the latest npm version corresponds to.
-  // If a dist version's base matches the latest npm version, use its source SHA.
+  // First try: dist version's base matches npm version → use dist's source SHA
+  // Fallback: resolve npm version as a git tag in the local repo (e.g. v3.4.0)
   let npmSourceSha: string | undefined
   if (npmVersion && latestDistVersion && baseVersion(latestDistVersion) === npmVersion) {
     npmSourceSha = parseDistSourceSha(latestDistVersion)
+  } else if (npmVersion && localPath) {
+    const tagSha = await resolveVersionTagAsync(localPath, npmVersion)
+    if (tagSha) npmSourceSha = tagSha
   }
 
   // Compute commit distance between npm source and latest dist source
+  const distRefSha = latestDistSourceSha ?? refSha
   let npmAheadOfDist: number | undefined
   let distAheadOfNpm: number | undefined
-  if (localPath && npmSourceSha && latestDistSourceSha && npmSourceSha !== latestDistSourceSha) {
+  if (localPath && npmSourceSha && distRefSha && npmSourceSha !== distRefSha
+      && !npmSourceSha.startsWith(distRefSha) && !distRefSha.startsWith(npmSourceSha)) {
     const [npmAhead, distAhead] = await Promise.all([
-      gitRevListCountAsync(localPath, latestDistSourceSha, npmSourceSha).catch(() => null),
-      gitRevListCountAsync(localPath, npmSourceSha, latestDistSourceSha).catch(() => null),
+      gitRevListCountAsync(localPath, distRefSha, npmSourceSha).catch(() => null),
+      gitRevListCountAsync(localPath, npmSourceSha, distRefSha).catch(() => null),
     ])
     if (npmAhead && npmAhead > 0) npmAheadOfDist = npmAhead
     if (distAhead && distAhead > 0) distAheadOfNpm = distAhead
