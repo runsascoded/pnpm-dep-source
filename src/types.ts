@@ -11,6 +11,8 @@ export interface Config {
   dependencies: Record<string, DepConfig>
   skipCheck?: boolean  // Deprecated: use checkOn: "none" instead
   checkOn?: "pre-push" | "pre-commit" | "none"
+  retries?: number     // API call retries (default: 1, env: PDS_RETRIES)
+  logLevel?: "debug" | "warn" | "error" | "none"  // (default: "warn", env: PDS_LOG_LEVEL)
 }
 
 export interface WorkspaceConfig {

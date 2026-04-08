@@ -1,6 +1,7 @@
 import { resolve } from 'path'
 
 import type { DepConfig, DepDisplayInfo, RemoteVersions } from './types.js'
+import { log } from './log.js'
 import { c } from './constants.js'
 import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js'
 import {
@@ -276,17 +277,23 @@ export async function fetchRemoteVersionsAsync(
   // Extract the committed dist SHA if it differs from current
   const committedDistSha = committedSource ? extractSourceSha(committedSource) : undefined
 
+  function catchLog<T>(label: string, p: Promise<T>): Promise<T | undefined> {
+    return p.catch((err) => {
+      log.debug(`${depName}: ${label}: ${err instanceof Error ? err.message : err}`)
+      return undefined
+    })
+  }
   const [npmInfo, ghSha, ghPkg, glSha, glPkg, committedPkg] = await Promise.all([
     getNpmInfoAsync(npmName),
-    dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
-    dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
-    dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
-    dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+    dep.github ? catchLog('GitHub ref', resolveGitHubRefAsync(dep.github, distBranch)) : undefined,
+    dep.github ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github, distBranch)) : undefined,
+    dep.gitlab ? catchLog('GitLab ref', resolveGitLabRefAsync(dep.gitlab, distBranch)) : undefined,
+    dep.gitlab ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab, distBranch)) : undefined,
     // Fetch package.json from the committed dist SHA to get its version/source info
     committedDistSha && dep.github
-      ? fetchGitHubPackageJsonAsync(dep.github, committedDistSha).catch(() => undefined)
+      ? catchLog('GitHub committed pkg', fetchGitHubPackageJsonAsync(dep.github, committedDistSha))
       : committedDistSha && dep.gitlab
-        ? fetchGitLabPackageJsonAsync(dep.gitlab, committedDistSha).catch(() => undefined)
+        ? catchLog('GitLab committed pkg', fetchGitLabPackageJsonAsync(dep.gitlab, committedDistSha))
         : undefined,
   ])
   const npmVersion = npmInfo?.version
@@ -302,13 +309,14 @@ export async function fetchRemoteVersionsAsync(
   // otherwise latest dist source SHA (e.g. when dep is in local mode)
   const refSha = pinnedSourceSha ?? latestDistSourceSha
   if (localPath && refSha) {
+    log.debug(`${depName}: comparing local=${localPath} refSha=${refSha} distSrc=${latestDistSourceSha} pinnedSrc=${pinnedSourceSha}`)
     const [localAhead, distAhead, pinnedAhead] = await Promise.all([
-      gitRevListCountAsync(localPath, refSha, 'HEAD').catch(() => null),
+      gitRevListCountAsync(localPath, refSha, 'HEAD').catch((e) => { log.debug(`${depName}: rev-list local: ${e}`); return null }),
       latestDistSourceSha && latestDistSourceSha !== refSha
-        ? gitRevListCountAsync(localPath, refSha, latestDistSourceSha).catch(() => null)
+        ? gitRevListCountAsync(localPath, refSha, latestDistSourceSha).catch((e) => { log.debug(`${depName}: rev-list dist: ${e}`); return null })
         : null,
       latestDistSourceSha && latestDistSourceSha !== refSha
-        ? gitRevListCountAsync(localPath, latestDistSourceSha, refSha).catch(() => null)
+        ? gitRevListCountAsync(localPath, latestDistSourceSha, refSha).catch((e) => { log.debug(`${depName}: rev-list pinned: ${e}`); return null })
         : null,
     ])
     if (localAhead && localAhead > 0) localAheadOfPinned = localAhead

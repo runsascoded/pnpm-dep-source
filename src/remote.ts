@@ -4,6 +4,28 @@ import { dirname, join, relative, resolve } from 'path'
 
 import type { PackageInfo } from './types.js'
 import { spawnAsync } from './process.js'
+import { log, getConfiguredRetries } from './log.js'
+
+async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const maxRetries = getConfiguredRetries()
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      const msg = err instanceof Error ? err.message : String(err)
+      if (attempt < maxRetries) {
+        log.debug(`${label}: attempt ${attempt + 1} failed (${msg}), retrying...`)
+      } else if (maxRetries > 0) {
+        log.warn(`${label}: failed after ${maxRetries + 1} attempts: ${msg}`)
+      } else {
+        log.warn(`${label}: failed: ${msg}`)
+      }
+    }
+  }
+  throw lastErr
+}
 
 export function getLocalGitInfo(localPath: string): { sha: string; dirty: boolean } | null {
   if (!existsSync(localPath)) {
@@ -123,13 +145,13 @@ export function resolveGitHubRefAsync(repo: string, ref: string): Promise<string
   const key = `${repo}:${ref}`
   const cached = ghRefCache.get(key)
   if (cached) return cached
-  const promise = (async () => {
+  const promise = withRetry(`GitHub ref ${repo}@${ref}`, async () => {
     const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' })
     if (result.status !== 0) {
       throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`)
     }
     return result.stdout.trim()
-  })()
+  })
   ghRefCache.set(key, promise)
   return promise
 }
@@ -157,7 +179,7 @@ export function resolveGitLabRefAsync(repo: string, ref: string): Promise<string
   const key = `${repo}:${ref}`
   const cached = glRefCache.get(key)
   if (cached) return cached
-  const promise = (async () => {
+  const promise = withRetry(`GitLab ref ${repo}@${ref}`, async () => {
     const encodedRepo = encodeURIComponent(repo)
     const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' })
     if (result.status !== 0) {
@@ -169,7 +191,7 @@ export function resolveGitLabRefAsync(repo: string, ref: string): Promise<string
     } catch {
       throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`)
     }
-  })()
+  })
   glRefCache.set(key, promise)
   return promise
 }
@@ -253,14 +275,14 @@ export function fetchGitHubPackageJsonAsync(repo: string, ref = 'HEAD'): Promise
   const key = `${repo}:${ref}`
   const cached = ghPkgCache.get(key)
   if (cached) return cached
-  const promise = (async () => {
+  const promise = withRetry(`GitHub package.json ${repo}@${ref}`, async () => {
     const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' })
     if (result.status !== 0) {
       throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`)
     }
     const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8')
     return JSON.parse(content)
-  })()
+  })
   ghPkgCache.set(key, promise)
   return promise
 }
@@ -271,14 +293,14 @@ export function fetchGitLabPackageJsonAsync(repo: string, ref = 'HEAD'): Promise
   const key = `${repo}:${ref}`
   const cached = glPkgCache.get(key)
   if (cached) return cached
-  const promise = (async () => {
+  const promise = withRetry(`GitLab package.json ${repo}@${ref}`, async () => {
     const encodedPath = encodeURIComponent(repo)
     const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' })
     if (result.status !== 0) {
       throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`)
     }
     return JSON.parse(result.stdout)
-  })()
+  })
   glPkgCache.set(key, promise)
   return promise
 }
@@ -412,23 +434,19 @@ const npmInfoCache = new Map<string, Promise<{ version: string; versions: string
 export function getNpmInfoAsync(packageName: string): Promise<{ version: string; versions: string[] } | undefined> {
   const cached = npmInfoCache.get(packageName)
   if (cached) return cached
-  const promise = (async () => {
-    try {
-      const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`)
-      if (!resp.ok) return undefined
-      const data = await resp.json() as Record<string, unknown>
-      const distTags = data['dist-tags'] as Record<string, string> | undefined
-      const version = distTags?.latest ?? (data.version as string)
-      if (!version) return undefined
-      const rawVersions = data.versions
-      const versions = rawVersions && typeof rawVersions === 'object'
-        ? Object.keys(rawVersions as object)
-        : [version]
-      return { version, versions }
-    } catch {
-      return undefined
-    }
-  })()
+  const promise = withRetry(`npm info ${packageName}`, async () => {
+    const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`)
+    if (!resp.ok) throw new Error(`npm registry returned ${resp.status}`)
+    const data = await resp.json() as Record<string, unknown>
+    const distTags = data['dist-tags'] as Record<string, string> | undefined
+    const version = distTags?.latest ?? (data.version as string)
+    if (!version) throw new Error(`no version found for ${packageName}`)
+    const rawVersions = data.versions
+    const versions = rawVersions && typeof rawVersions === 'object'
+      ? Object.keys(rawVersions as object)
+      : [version]
+    return { version, versions }
+  }).catch(() => undefined)
   npmInfoCache.set(packageName, promise)
   return promise
 }
