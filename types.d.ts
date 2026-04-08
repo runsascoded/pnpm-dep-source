@@ -10,6 +10,8 @@ export interface Config {
     dependencies: Record<string, DepConfig>;
     skipCheck?: boolean;
     checkOn?: "pre-push" | "pre-commit" | "none";
+    retries?: number;
+    logLevel?: "debug" | "warn" | "error" | "none";
 }
 export interface WorkspaceConfig {
     packages?: string[];
@@ -47,7 +49,8 @@ export type RemoteVersions = {
     localAheadOfPinned?: number;
     distAheadOfPinned?: number;
     pinnedAheadOfDist?: number;
-    npmVersionsBehind?: number;
+    npmAheadOfDist?: number;
+    distAheadOfNpm?: number;
 };
 export interface HooksConfig {
     previousHooksPath?: string;

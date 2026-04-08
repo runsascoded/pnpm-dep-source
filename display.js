@@ -1,7 +1,8 @@
 import { resolve } from 'path';
+import { log } from './log.js';
 import { c } from './constants.js';
 import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
-import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, countNpmVersionsBetween, baseVersion, } from './remote.js';
+import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, } from './remote.js';
 export function getSourceType(source) {
     if (source === 'workspace:*' || source === 'local')
         return 'local';
@@ -134,10 +135,9 @@ export function displayDep(info, verbose = false, remoteVersions) {
         if (verbose && !isActive && !versions?.npm)
             return;
         const activeSuffix = isActive ? formatActiveSuffix(info) : '';
-        const npmDelta = formatAheadCount(versions?.npmVersionsBehind);
-        const npmDeltaSuffix = npmDelta ? ` ${npmDelta}` : '';
+        const npmDelta = formatAheadBehind(versions?.npmAheadOfDist, versions?.distAheadOfNpm);
         const shaSuffix = versions?.npmSourceSha ? `, src: ${versions.npmSourceSha.slice(0, 7)}` : '';
-        const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm}${shaSuffix})${c.reset}${npmDeltaSuffix}` : '';
+        const latestSuffix = versions?.npm ? ` ${c.blue}(latest: ${versions.npm}${shaSuffix})${c.reset}${npmDelta}` : '';
         line('NPM', isActive, info.config.npm, activeSuffix + latestSuffix);
     }
 }
@@ -223,21 +223,26 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     const npmName = dep.npm ?? depName;
     // Extract the committed dist SHA if it differs from current
     const committedDistSha = committedSource ? extractSourceSha(committedSource) : undefined;
+    function catchLog(label, p) {
+        return p.catch((err) => {
+            log.debug(`${depName}: ${label}: ${err instanceof Error ? err.message : err}`);
+            return undefined;
+        });
+    }
     const [npmInfo, ghSha, ghPkg, glSha, glPkg, committedPkg] = await Promise.all([
         getNpmInfoAsync(npmName),
-        dep.github ? resolveGitHubRefAsync(dep.github, distBranch).catch(() => undefined) : undefined,
-        dep.github ? fetchGitHubPackageJsonAsync(dep.github, distBranch).catch(() => undefined) : undefined,
-        dep.gitlab ? resolveGitLabRefAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
-        dep.gitlab ? fetchGitLabPackageJsonAsync(dep.gitlab, distBranch).catch(() => undefined) : undefined,
+        dep.github ? catchLog('GitHub ref', resolveGitHubRefAsync(dep.github, distBranch)) : undefined,
+        dep.github ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github, distBranch)) : undefined,
+        dep.gitlab ? catchLog('GitLab ref', resolveGitLabRefAsync(dep.gitlab, distBranch)) : undefined,
+        dep.gitlab ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab, distBranch)) : undefined,
         // Fetch package.json from the committed dist SHA to get its version/source info
         committedDistSha && dep.github
-            ? fetchGitHubPackageJsonAsync(dep.github, committedDistSha).catch(() => undefined)
+            ? catchLog('GitHub committed pkg', fetchGitHubPackageJsonAsync(dep.github, committedDistSha))
             : committedDistSha && dep.gitlab
-                ? fetchGitLabPackageJsonAsync(dep.gitlab, committedDistSha).catch(() => undefined)
+                ? catchLog('GitLab committed pkg', fetchGitLabPackageJsonAsync(dep.gitlab, committedDistSha))
                 : undefined,
     ]);
     const npmVersion = npmInfo?.version;
-    const npmVersions = npmInfo?.versions ?? [];
     const latestDistVersion = (ghPkg?.version ?? glPkg?.version);
     const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined;
     const pinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined;
@@ -248,13 +253,14 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     // otherwise latest dist source SHA (e.g. when dep is in local mode)
     const refSha = pinnedSourceSha ?? latestDistSourceSha;
     if (localPath && refSha) {
+        log.debug(`${depName}: comparing local=${localPath} refSha=${refSha} distSrc=${latestDistSourceSha} pinnedSrc=${pinnedSourceSha}`);
         const [localAhead, distAhead, pinnedAhead] = await Promise.all([
-            gitRevListCountAsync(localPath, refSha, 'HEAD').catch(() => null),
+            gitRevListCountAsync(localPath, refSha, 'HEAD').catch((e) => { log.debug(`${depName}: rev-list local: ${e}`); return null; }),
             latestDistSourceSha && latestDistSourceSha !== refSha
-                ? gitRevListCountAsync(localPath, refSha, latestDistSourceSha).catch(() => null)
+                ? gitRevListCountAsync(localPath, refSha, latestDistSourceSha).catch((e) => { log.debug(`${depName}: rev-list dist: ${e}`); return null; })
                 : null,
             latestDistSourceSha && latestDistSourceSha !== refSha
-                ? gitRevListCountAsync(localPath, latestDistSourceSha, refSha).catch(() => null)
+                ? gitRevListCountAsync(localPath, latestDistSourceSha, refSha).catch((e) => { log.debug(`${depName}: rev-list pinned: ${e}`); return null; })
                 : null,
         ]);
         if (localAhead && localAhead > 0)
@@ -264,25 +270,38 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
         if (pinnedAhead && pinnedAhead > 0)
             pinnedAheadOfDist = pinnedAhead;
     }
-    // Count npm versions between the best-known version and latest npm.
-    // Use latest dist base version if available (answers "is npm up-to-date with dist?"),
-    // otherwise fall back to installed base version.
-    let npmVersionsBehind;
-    const bestKnownVersion = latestDistVersion ?? pinnedVersion;
-    if (npmVersion && bestKnownVersion && npmVersions.length > 0) {
-        const bestBase = baseVersion(bestKnownVersion);
-        npmVersionsBehind = countNpmVersionsBetween(npmVersions, bestBase, npmVersion);
-    }
     // Find the source SHA that the latest npm version corresponds to.
-    // If a dist version's base matches the latest npm version, use its source SHA.
+    // First try: dist version's base matches npm version → use dist's source SHA
+    // Fallback: resolve npm version as a git tag in the local repo (e.g. v3.4.0)
     let npmSourceSha;
     if (npmVersion && latestDistVersion && baseVersion(latestDistVersion) === npmVersion) {
         npmSourceSha = parseDistSourceSha(latestDistVersion);
     }
+    else if (npmVersion && localPath) {
+        const tagSha = await resolveVersionTagAsync(localPath, npmVersion);
+        if (tagSha)
+            npmSourceSha = tagSha;
+    }
+    // Compute commit distance between npm source and latest dist source
+    const distRefSha = latestDistSourceSha ?? refSha;
+    let npmAheadOfDist;
+    let distAheadOfNpm;
+    if (localPath && npmSourceSha && distRefSha && npmSourceSha !== distRefSha
+        && !npmSourceSha.startsWith(distRefSha) && !distRefSha.startsWith(npmSourceSha)) {
+        const [npmAhead, distAhead] = await Promise.all([
+            gitRevListCountAsync(localPath, distRefSha, npmSourceSha).catch(() => null),
+            gitRevListCountAsync(localPath, npmSourceSha, distRefSha).catch(() => null),
+        ]);
+        if (npmAhead && npmAhead > 0)
+            npmAheadOfDist = npmAhead;
+        if (distAhead && distAhead > 0)
+            distAheadOfNpm = distAhead;
+    }
     const committedDistVersion = committedPkg?.version;
     return {
         npm: npmVersion,
-        npmVersionsBehind,
+        npmAheadOfDist,
+        distAheadOfNpm,
         npmSourceSha,
         github: ghSha ? ghSha.slice(0, 7) : undefined,
         githubVersion: ghPkg?.version,

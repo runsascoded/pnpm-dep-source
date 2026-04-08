@@ -2,6 +2,30 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { spawnAsync } from './process.js';
+import { log, getConfiguredRetries } from './log.js';
+async function withRetry(label, fn) {
+    const maxRetries = getConfiguredRetries();
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn();
+        }
+        catch (err) {
+            lastErr = err;
+            const msg = err instanceof Error ? err.message : String(err);
+            if (attempt < maxRetries) {
+                log.debug(`${label}: attempt ${attempt + 1} failed (${msg}), retrying...`);
+            }
+            else if (maxRetries > 0) {
+                log.warn(`${label}: failed after ${maxRetries + 1} attempts: ${msg}`);
+            }
+            else {
+                log.warn(`${label}: failed: ${msg}`);
+            }
+        }
+    }
+    throw lastErr;
+}
 export function getLocalGitInfo(localPath) {
     if (!existsSync(localPath)) {
         return null;
@@ -79,6 +103,18 @@ export async function gitRevListCountAsync(repoPath, base, head) {
         return null;
     }
 }
+// Resolve an npm version to a git SHA via local tags (tries v1.2.3 then 1.2.3)
+export async function resolveVersionTagAsync(repoPath, version) {
+    for (const tag of [`v${version}`, version]) {
+        try {
+            const result = await spawnAsync('git', ['-C', repoPath, 'rev-parse', '--verify', `${tag}^{commit}`], { encoding: 'utf-8' });
+            if (result.status === 0)
+                return result.stdout.trim();
+        }
+        catch { }
+    }
+    return undefined;
+}
 export function resolveGitHubRef(repo, ref) {
     // Use gh api to resolve ref to SHA from GitHub
     const result = spawnSync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], {
@@ -95,13 +131,13 @@ export function resolveGitHubRefAsync(repo, ref) {
     const cached = ghRefCache.get(key);
     if (cached)
         return cached;
-    const promise = (async () => {
+    const promise = withRetry(`GitHub ref ${repo}@${ref}`, async () => {
         const result = await spawnAsync('gh', ['api', `repos/${repo}/commits/${ref}`, '--jq', '.sha'], { encoding: 'utf-8' });
         if (result.status !== 0) {
             throw new Error(`Failed to resolve GitHub ref "${ref}" for ${repo}: ${result.stderr}`);
         }
         return result.stdout.trim();
-    })();
+    });
     ghRefCache.set(key, promise);
     return promise;
 }
@@ -128,7 +164,7 @@ export function resolveGitLabRefAsync(repo, ref) {
     const cached = glRefCache.get(key);
     if (cached)
         return cached;
-    const promise = (async () => {
+    const promise = withRetry(`GitLab ref ${repo}@${ref}`, async () => {
         const encodedRepo = encodeURIComponent(repo);
         const result = await spawnAsync('glab', ['api', `projects/${encodedRepo}/repository/commits/${ref}`], { encoding: 'utf-8' });
         if (result.status !== 0) {
@@ -141,7 +177,7 @@ export function resolveGitLabRefAsync(repo, ref) {
         catch {
             throw new Error(`Failed to parse GitLab API response for ${repo}: ${result.stdout}`);
         }
-    })();
+    });
     glRefCache.set(key, promise);
     return promise;
 }
@@ -216,14 +252,14 @@ export function fetchGitHubPackageJsonAsync(repo, ref = 'HEAD') {
     const cached = ghPkgCache.get(key);
     if (cached)
         return cached;
-    const promise = (async () => {
+    const promise = withRetry(`GitHub package.json ${repo}@${ref}`, async () => {
         const result = await spawnAsync('gh', ['api', `repos/${repo}/contents/package.json?ref=${ref}`, '--jq', '.content'], { encoding: 'utf-8' });
         if (result.status !== 0) {
             throw new Error(`Failed to fetch package.json from GitHub ${repo}: ${result.stderr}`);
         }
         const content = Buffer.from(result.stdout.trim(), 'base64').toString('utf-8');
         return JSON.parse(content);
-    })();
+    });
     ghPkgCache.set(key, promise);
     return promise;
 }
@@ -233,14 +269,14 @@ export function fetchGitLabPackageJsonAsync(repo, ref = 'HEAD') {
     const cached = glPkgCache.get(key);
     if (cached)
         return cached;
-    const promise = (async () => {
+    const promise = withRetry(`GitLab package.json ${repo}@${ref}`, async () => {
         const encodedPath = encodeURIComponent(repo);
         const result = await spawnAsync('glab', ['api', `projects/${encodedPath}/repository/files/package.json/raw?ref=${ref}`], { encoding: 'utf-8' });
         if (result.status !== 0) {
             throw new Error(`Failed to fetch package.json from GitLab ${repo}: ${result.stderr}`);
         }
         return JSON.parse(result.stdout);
-    })();
+    });
     glPkgCache.set(key, promise);
     return promise;
 }
@@ -361,41 +397,23 @@ export function getNpmInfoAsync(packageName) {
     const cached = npmInfoCache.get(packageName);
     if (cached)
         return cached;
-    const promise = (async () => {
-        try {
-            const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
-            if (!resp.ok)
-                return undefined;
-            const data = await resp.json();
-            const distTags = data['dist-tags'];
-            const version = distTags?.latest ?? data.version;
-            if (!version)
-                return undefined;
-            const rawVersions = data.versions;
-            const versions = rawVersions && typeof rawVersions === 'object'
-                ? Object.keys(rawVersions)
-                : [version];
-            return { version, versions };
-        }
-        catch {
-            return undefined;
-        }
-    })();
+    const promise = withRetry(`npm info ${packageName}`, async () => {
+        const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
+        if (!resp.ok)
+            throw new Error(`npm registry returned ${resp.status}`);
+        const data = await resp.json();
+        const distTags = data['dist-tags'];
+        const version = distTags?.latest ?? data.version;
+        if (!version)
+            throw new Error(`no version found for ${packageName}`);
+        const rawVersions = data.versions;
+        const versions = rawVersions && typeof rawVersions === 'object'
+            ? Object.keys(rawVersions)
+            : [version];
+        return { version, versions };
+    }).catch(() => undefined);
     npmInfoCache.set(packageName, promise);
     return promise;
-}
-// Count published npm versions strictly after `from` up to and including `to`.
-// Returns undefined if either version is not found in the list.
-export function countNpmVersionsBetween(versions, from, to) {
-    if (from === to)
-        return 0;
-    const fromIdx = versions.indexOf(from);
-    const toIdx = versions.indexOf(to);
-    if (fromIdx < 0 || toIdx < 0)
-        return undefined;
-    if (toIdx <= fromIdx)
-        return undefined;
-    return toIdx - fromIdx;
 }
 // Strip pre-release/dist suffixes to get the base semver: "1.2.3-dist.abc" → "1.2.3"
 export function baseVersion(version) {

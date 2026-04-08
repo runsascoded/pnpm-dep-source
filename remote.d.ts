@@ -9,6 +9,7 @@ export declare function getLocalGitInfoAsync(localPath: string): Promise<{
 } | null>;
 export declare function parseDistSourceSha(version: string): string | undefined;
 export declare function gitRevListCountAsync(repoPath: string, base: string, head: string): Promise<number | null>;
+export declare function resolveVersionTagAsync(repoPath: string, version: string): Promise<string | undefined>;
 export declare function resolveGitHubRef(repo: string, ref: string): string;
 export declare function resolveGitHubRefAsync(repo: string, ref: string): Promise<string>;
 export declare function resolveGitLabRef(repo: string, ref: string): string;
@@ -44,7 +45,6 @@ export declare function getNpmInfoAsync(packageName: string): Promise<{
     version: string;
     versions: string[];
 } | undefined>;
-export declare function countNpmVersionsBetween(versions: string[], from: string, to: string): number | undefined;
 export declare function baseVersion(version: string): string;
 export declare function parseGlobalPkgSource(pkg: {
     version?: string;

@@ -9,6 +9,7 @@ import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchin
 import { loadPackageJson, savePackageJson, removePnpmOverride, updatePackageJsonDep, hasDependency, addDependency, removeDependency, getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
 import { resolveGitHubRef, resolveGitLabRef, getLatestNpmVersion, npmPackageExists, getLocalPackageInfo, getRemotePackageInfo, isRepoUrl, getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync, } from './remote.js';
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js';
+import { setLogLevel, setRetries } from './log.js';
 import { updateViteConfig, makeGitHubSpecifier, switchToLocal, switchToGitHub, switchToGitLab, cleanupDepReferences, runPnpmInstall, runGlobalInstall, } from './switch.js';
 program
     .name('pnpm-dep-source')
@@ -20,6 +21,15 @@ program
     const dir = program.opts().dir;
     if (dir)
         process.chdir(resolve(dir));
+    // Apply config-based log level and retries (env vars take precedence, handled inside)
+    try {
+        const cfg = program.opts().global ? loadGlobalConfig() : loadConfig(findProjectRoot());
+        if (cfg.logLevel)
+            setLogLevel(cfg.logLevel);
+        if (cfg.retries !== undefined)
+            setRetries(cfg.retries);
+    }
+    catch { }
 });
 program
     .command('init [path-or-url]')
