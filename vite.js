@@ -59,17 +59,35 @@ export function pdsPlugin(options) {
                     if (!existsSync(resolved))
                         continue;
                     aliases[peer] = resolved;
-                    if (peer === 'react') {
-                        const jsxRuntime = resolve(resolved, 'jsx-runtime');
-                        if (existsSync(jsxRuntime)) {
-                            aliases['react/jsx-runtime'] = jsxRuntime;
-                        }
+                    // Also alias every non-glob subpath export from the peer's package.json,
+                    // so imports like `react/jsx-runtime` or `plotly.js/basic` resolve to the
+                    // consumer's copy across the workspace symlink boundary.
+                    const peerPkgPath = resolve(resolved, 'package.json');
+                    if (!existsSync(peerPkgPath))
+                        continue;
+                    let peerPkg;
+                    try {
+                        peerPkg = JSON.parse(readFileSync(peerPkgPath, 'utf-8'));
                     }
-                    if (peer === 'react-dom') {
-                        const client = resolve(resolved, 'client');
-                        if (existsSync(client)) {
-                            aliases['react-dom/client'] = client;
+                    catch {
+                        continue;
+                    }
+                    const peerExports = peerPkg.exports;
+                    if (!peerExports || typeof peerExports !== 'object')
+                        continue;
+                    for (const [key, target] of Object.entries(peerExports)) {
+                        if (key === '.' || !key.startsWith('./') || key.includes('*'))
+                            continue;
+                        const subpath = `${peer}/${key.slice(2)}`;
+                        let targetPath;
+                        if (typeof target === 'string')
+                            targetPath = target;
+                        else if (target && typeof target === 'object') {
+                            const cond = target;
+                            targetPath = cond.import ?? cond.require ?? cond.default;
                         }
+                        if (targetPath)
+                            aliases[subpath] = resolve(resolved, targetPath);
                     }
                 }
             }

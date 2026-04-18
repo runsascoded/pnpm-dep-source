@@ -276,11 +276,20 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     let npmSourceSha;
     if (npmVersion && latestDistVersion && baseVersion(latestDistVersion) === npmVersion) {
         npmSourceSha = parseDistSourceSha(latestDistVersion);
+        log.debug(`${depName}: npmSourceSha from dist (base matches npm=${npmVersion}): ${npmSourceSha}`);
     }
     else if (npmVersion && localPath) {
         const tagSha = await resolveVersionTagAsync(localPath, npmVersion);
-        if (tagSha)
+        if (tagSha) {
             npmSourceSha = tagSha;
+            log.debug(`${depName}: npmSourceSha from local tag v${npmVersion}: ${tagSha}`);
+        }
+        else {
+            log.debug(`${depName}: npmSourceSha unresolved (npm=${npmVersion}, no matching tag in ${localPath})`);
+        }
+    }
+    else if (npmVersion) {
+        log.debug(`${depName}: npmSourceSha unresolved (npm=${npmVersion}, no localPath for tag lookup)`);
     }
     // Compute commit distance between npm source and latest dist source
     const distRefSha = latestDistSourceSha ?? refSha;
@@ -288,14 +297,18 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     let distAheadOfNpm;
     if (localPath && npmSourceSha && distRefSha && npmSourceSha !== distRefSha
         && !npmSourceSha.startsWith(distRefSha) && !distRefSha.startsWith(npmSourceSha)) {
+        log.debug(`${depName}: computing npm<->dist delta: npmSrc=${npmSourceSha} distRef=${distRefSha}`);
         const [npmAhead, distAhead] = await Promise.all([
-            gitRevListCountAsync(localPath, distRefSha, npmSourceSha).catch(() => null),
-            gitRevListCountAsync(localPath, npmSourceSha, distRefSha).catch(() => null),
+            gitRevListCountAsync(localPath, distRefSha, npmSourceSha).catch((e) => { log.debug(`${depName}: rev-list npm-ahead: ${e}`); return null; }),
+            gitRevListCountAsync(localPath, npmSourceSha, distRefSha).catch((e) => { log.debug(`${depName}: rev-list dist-ahead-of-npm: ${e}`); return null; }),
         ]);
         if (npmAhead && npmAhead > 0)
             npmAheadOfDist = npmAhead;
         if (distAhead && distAhead > 0)
             distAheadOfNpm = distAhead;
+    }
+    else if (localPath && npmSourceSha && distRefSha) {
+        log.debug(`${depName}: skipping npm<->dist delta (equal/prefix): npmSrc=${npmSourceSha} distRef=${distRefSha}`);
     }
     const committedDistVersion = committedPkg?.version;
     return {
