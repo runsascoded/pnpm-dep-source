@@ -90,8 +90,7 @@ describe('pdsPlugin', () => {
     })
   })
 
-  it('adds react/jsx-runtime alias for react peer', () => {
-    const jsxDir = join(tmpDir, 'node_modules', 'react', 'jsx-runtime')
+  it('aliases peer dep subpath exports (e.g. react/jsx-runtime)', () => {
     setupProject({
       pdsConfig: {
         dependencies: {
@@ -105,17 +104,27 @@ describe('pdsPlugin', () => {
       },
       installedModules: ['react'],
     })
-    mkdirSync(jsxDir, { recursive: true })
+    writeFileSync(
+      join(tmpDir, 'node_modules', 'react', 'package.json'),
+      JSON.stringify({
+        name: 'react',
+        exports: {
+          '.': './index.js',
+          './jsx-runtime': './jsx-runtime.js',
+          './jsx-dev-runtime': { import: './jsx-dev-runtime.mjs', require: './jsx-dev-runtime.cjs' },
+        },
+      }),
+    )
     const plugin = pdsPlugin({ root: tmpDir })
     const result = plugin.config()
     expect(result).toBeDefined()
     const aliases = result!.resolve.alias
     expect(aliases['react']).toBe(join(tmpDir, 'node_modules', 'react'))
-    expect(aliases['react/jsx-runtime']).toBe(jsxDir)
+    expect(aliases['react/jsx-runtime']).toBe(join(tmpDir, 'node_modules', 'react', 'jsx-runtime.js'))
+    expect(aliases['react/jsx-dev-runtime']).toBe(join(tmpDir, 'node_modules', 'react', 'jsx-dev-runtime.mjs'))
   })
 
-  it('adds react-dom/client alias for react-dom peer', () => {
-    const clientDir = join(tmpDir, 'node_modules', 'react-dom', 'client')
+  it('skips glob and root-dot entries in peer exports map', () => {
     setupProject({
       pdsConfig: {
         dependencies: {
@@ -124,18 +133,53 @@ describe('pdsPlugin', () => {
       },
       localDeps: {
         'my-dep': {
-          peerDependencies: { 'react-dom': '^18.0.0' },
+          peerDependencies: { 'plotly.js': '^3.0.0' },
         },
       },
-      installedModules: ['react-dom'],
+      installedModules: ['plotly.js'],
     })
-    mkdirSync(clientDir, { recursive: true })
+    writeFileSync(
+      join(tmpDir, 'node_modules', 'plotly.js', 'package.json'),
+      JSON.stringify({
+        name: 'plotly.js',
+        exports: {
+          '.': './dist/plotly.js',
+          './basic': './lib/index-basic.js',
+          './dist/*': './dist/*',
+        },
+      }),
+    )
     const plugin = pdsPlugin({ root: tmpDir })
     const result = plugin.config()
     expect(result).toBeDefined()
     const aliases = result!.resolve.alias
-    expect(aliases['react-dom']).toBe(join(tmpDir, 'node_modules', 'react-dom'))
-    expect(aliases['react-dom/client']).toBe(clientDir)
+    expect(aliases['plotly.js']).toBe(join(tmpDir, 'node_modules', 'plotly.js'))
+    expect(aliases['plotly.js/basic']).toBe(join(tmpDir, 'node_modules', 'plotly.js', 'lib/index-basic.js'))
+    // glob and root-dot should be skipped
+    expect(aliases['plotly.js/dist/*']).toBeUndefined()
+    expect(aliases['plotly.js/.']).toBeUndefined()
+  })
+
+  it('handles peer with no exports map (only root alias)', () => {
+    setupProject({
+      pdsConfig: {
+        dependencies: {
+          'my-dep': { localPath: 'my-dep' },
+        },
+      },
+      localDeps: {
+        'my-dep': {
+          peerDependencies: { 'plain-lib': '^1.0.0' },
+        },
+      },
+      installedModules: ['plain-lib'],
+    })
+    const plugin = pdsPlugin({ root: tmpDir })
+    const result = plugin.config()
+    expect(result).toBeDefined()
+    const aliases = result!.resolve.alias
+    expect(aliases['plain-lib']).toBe(join(tmpDir, 'node_modules', 'plain-lib'))
+    expect(Object.keys(aliases).filter(k => k.startsWith('plain-lib/'))).toEqual([])
   })
 
   it('skips peers not installed in consumer', () => {

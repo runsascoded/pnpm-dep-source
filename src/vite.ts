@@ -76,17 +76,28 @@ export function pdsPlugin(options?: PdsVitePluginOptions) {
           const resolved = resolve(root, 'node_modules', peer)
           if (!existsSync(resolved)) continue
           aliases[peer] = resolved
-          if (peer === 'react') {
-            const jsxRuntime = resolve(resolved, 'jsx-runtime')
-            if (existsSync(jsxRuntime)) {
-              aliases['react/jsx-runtime'] = jsxRuntime
+
+          // Also alias every non-glob subpath export from the peer's package.json,
+          // so imports like `react/jsx-runtime` or `plotly.js/basic` resolve to the
+          // consumer's copy across the workspace symlink boundary.
+          const peerPkgPath = resolve(resolved, 'package.json')
+          if (!existsSync(peerPkgPath)) continue
+          let peerPkg: Record<string, unknown>
+          try {
+            peerPkg = JSON.parse(readFileSync(peerPkgPath, 'utf-8'))
+          } catch { continue }
+          const peerExports = peerPkg.exports
+          if (!peerExports || typeof peerExports !== 'object') continue
+          for (const [key, target] of Object.entries(peerExports as Record<string, unknown>)) {
+            if (key === '.' || !key.startsWith('./') || key.includes('*')) continue
+            const subpath = `${peer}/${key.slice(2)}`
+            let targetPath: string | undefined
+            if (typeof target === 'string') targetPath = target
+            else if (target && typeof target === 'object') {
+              const cond = target as Record<string, string>
+              targetPath = cond.import ?? cond.require ?? cond.default
             }
-          }
-          if (peer === 'react-dom') {
-            const client = resolve(resolved, 'client')
-            if (existsSync(client)) {
-              aliases['react-dom/client'] = client
-            }
+            if (targetPath) aliases[subpath] = resolve(resolved, targetPath)
           }
         }
       }

@@ -97,3 +97,18 @@ a new context), the missing alias surfaces as a `Failed to resolve
 import` error under `pds l`. Historically worked around per-project,
 per-subpath. The generic fix handles all subpaths for all peer deps
 automatically.
+
+## Implementation notes
+
+Implemented in `src/vite.ts`. The loop now reads each peer's
+`package.json`, iterates `exports`, and aliases every non-glob,
+non-root subpath. Supports both string targets (`"./x": "./y.js"`) and
+conditional-object targets (resolves `import` → `require` → `default`).
+Hardcoded `react/jsx-runtime` and `react-dom/client` special cases
+removed; they're now handled automatically from React's exports map
+(confirmed by updated unit tests in `test/vite-plugin.test.ts`).
+
+Minor divergence from the spec's proposed snippet: the implementation
+also skips keys that don't begin with `./` (Node's export-key spec
+requires this form, so a non-conforming key is treated as invalid
+rather than being coerced into `${peer}/${key}`).
