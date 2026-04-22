@@ -111,6 +111,22 @@ export async function gitRevListCountAsync(
   }
 }
 
+// Check if a SHA resolves to a commit object in the given local repo
+export async function isCommitReachableAsync(
+  repoPath: string,
+  sha: string,
+): Promise<boolean> {
+  try {
+    const result = await spawnAsync(
+      'git', ['-C', repoPath, 'cat-file', '-e', `${sha}^{commit}`],
+      { encoding: 'utf-8' },
+    )
+    return result.status === 0
+  } catch {
+    return false
+  }
+}
+
 // Resolve an npm version to a git SHA via local tags (tries v1.2.3 then 1.2.3)
 export async function resolveVersionTagAsync(
   repoPath: string,

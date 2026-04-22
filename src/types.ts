@@ -12,7 +12,7 @@ export interface Config {
   skipCheck?: boolean  // Deprecated: use checkOn: "none" instead
   checkOn?: "pre-push" | "pre-commit" | "none"
   retries?: number     // API call retries (default: 1, env: PDS_RETRIES)
-  logLevel?: "debug" | "warn" | "error" | "none"  // (default: "warn", env: PDS_LOG_LEVEL)
+  logLevel?: "debug" | "info" | "warn" | "error" | "none"  // (default: "warn", env: PDS_LOG_LEVEL)
 }
 
 export interface WorkspaceConfig {
@@ -51,6 +51,7 @@ export type RemoteVersions = {
   pinnedAheadOfDist?: number    // commits in pinned source not in latest dist (diverged)
   npmAheadOfDist?: number       // commits in npm source not in latest dist source
   distAheadOfNpm?: number       // commits in latest dist source not in npm source
+  pinnedSrcMissing?: boolean    // pinned dist's source SHA not reachable in local repo (orphaned)
 }
 
 export interface HooksConfig {

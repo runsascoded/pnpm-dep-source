@@ -1,6 +1,6 @@
-export type LogLevel = 'debug' | 'warn' | 'error' | 'none'
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'none'
 
-const LEVELS: Record<LogLevel, number> = { debug: 0, warn: 1, error: 2, none: 3 }
+const LEVELS: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3, none: 4 }
 
 let level: LogLevel | undefined
 
@@ -36,6 +36,9 @@ function shouldLog(msgLevel: LogLevel): boolean {
 export const log = {
   debug(...args: unknown[]): void {
     if (shouldLog('debug')) console.error('[pds:debug]', ...args)
+  },
+  info(...args: unknown[]): void {
+    if (shouldLog('info')) console.error('[pds:info]', ...args)
   },
   warn(...args: unknown[]): void {
     if (shouldLog('warn')) console.error('[pds:warn]', ...args)

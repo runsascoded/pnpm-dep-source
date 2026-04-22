@@ -263,6 +263,28 @@ describe('displayDep', () => {
     ])
   })
 
+  it('shows (src lost) on pinned line when pinnedSrcMissing', () => {
+    const info = mkInfo({
+      sourceType: 'github',
+      currentSource: 'https://github.com/user/repo#aaaaaaa',
+      version: '1.0.0-dist.orphan12',
+      config: { localPath: '../my-dep', github: 'user/repo' },
+    })
+    const versions: RemoteVersions = {
+      github: 'bbbbbbb',
+      githubVersion: '1.0.0-dist.new5678',
+      pinnedSrcMissing: true,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../my-dep',
+      '* GitHub: user/repo',
+      '      pinned: aaaaaaa; 1.0.0-dist.orphan12 (src lost)',
+      '      latest: bbbbbbb; 1.0.0-dist.new5678',
+    ])
+  })
+
   it('shows github active with both ahead and behind (+M-N)', () => {
     const info = mkInfo({
       sourceType: 'github',

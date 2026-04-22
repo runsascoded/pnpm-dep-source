@@ -7,7 +7,7 @@ import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlob
 import {
   getLocalGitInfo, getLocalGitInfoAsync,
   getGlobalInstallSource,
-  parseDistSourceSha, gitRevListCountAsync, resolveVersionTagAsync,
+  parseDistSourceSha, gitRevListCountAsync, isCommitReachableAsync, resolveVersionTagAsync,
   resolveGitHubRef, resolveGitLabRef,
   resolveGitHubRefAsync, resolveGitLabRefAsync,
   fetchGitHubPackageJson, fetchGitLabPackageJson,
@@ -135,7 +135,8 @@ export function displayDep(
       }
     } else if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
       line(label, true, repo + subdirSuffix, '')
-      console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`)
+      const lostSuffix = versions?.pinnedSrcMissing ? ` ${c.red}(src lost)${c.reset}` : ''
+      console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}${lostSuffix}`)
       console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`)
     } else {
       const distSuffix = !isActive && distParts.length ? ` ${c.blue}(dist@${distParts.join('; ')})${c.reset}${distDelta}` : ''
@@ -300,7 +301,21 @@ export async function fetchRemoteVersionsAsync(
 
   const latestDistVersion = (ghPkg?.version ?? glPkg?.version) as string | undefined
   const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined
-  const pinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined
+  const rawPinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined
+
+  // Orphan detection: if the pinned dist's source SHA is not reachable in the
+  // local repo (likely force-pushed away), flag it and fall back to the latest
+  // dist source as the comparison ref so other deltas remain meaningful.
+  let pinnedSrcMissing = false
+  let pinnedSourceSha = rawPinnedSourceSha
+  if (localPath && rawPinnedSourceSha) {
+    const reachable = await isCommitReachableAsync(localPath, rawPinnedSourceSha)
+    if (!reachable) {
+      log.info(`${depName}: pinned source ${rawPinnedSourceSha} not reachable in ${localPath} (likely force-pushed or garbage-collected)`)
+      pinnedSrcMissing = true
+      pinnedSourceSha = undefined
+    }
+  }
 
   let localAheadOfPinned: number | undefined
   let distAheadOfPinned: number | undefined
@@ -376,6 +391,7 @@ export async function fetchRemoteVersionsAsync(
     localAheadOfPinned,
     distAheadOfPinned,
     pinnedAheadOfDist,
+    pinnedSrcMissing: pinnedSrcMissing || undefined,
   }
 }
 

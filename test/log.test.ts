@@ -52,6 +52,30 @@ describe('log levels', () => {
     expect(stderrSpy).toHaveBeenCalledWith('[pds:debug]', 'test debug')
   })
 
+  it('log.info is suppressed at warn level (default)', () => {
+    setLogLevel('warn')
+    log.info('test info')
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
+  it('log.info outputs at info level', () => {
+    setLogLevel('info')
+    log.info('test info')
+    expect(stderrSpy).toHaveBeenCalledWith('[pds:info]', 'test info')
+  })
+
+  it('log.warn outputs at info level', () => {
+    setLogLevel('info')
+    log.warn('test warn')
+    expect(stderrSpy).toHaveBeenCalledWith('[pds:warn]', 'test warn')
+  })
+
+  it('log.debug is suppressed at info level', () => {
+    setLogLevel('info')
+    log.debug('test debug')
+    expect(stderrSpy).not.toHaveBeenCalled()
+  })
+
   it('none suppresses everything', () => {
     setLogLevel('none')
     log.debug('d')
