@@ -1,4 +1,4 @@
-const LEVELS = { debug: 0, warn: 1, error: 2, none: 3 };
+const LEVELS = { debug: 0, info: 1, warn: 2, error: 3, none: 4 };
 let level;
 export function getLogLevel() {
     if (level !== undefined)
@@ -32,6 +32,10 @@ export const log = {
     debug(...args) {
         if (shouldLog('debug'))
             console.error('[pds:debug]', ...args);
+    },
+    info(...args) {
+        if (shouldLog('info'))
+            console.error('[pds:info]', ...args);
     },
     warn(...args) {
         if (shouldLog('warn'))

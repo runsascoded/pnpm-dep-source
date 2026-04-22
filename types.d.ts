@@ -11,7 +11,7 @@ export interface Config {
     skipCheck?: boolean;
     checkOn?: "pre-push" | "pre-commit" | "none";
     retries?: number;
-    logLevel?: "debug" | "warn" | "error" | "none";
+    logLevel?: "debug" | "info" | "warn" | "error" | "none";
 }
 export interface WorkspaceConfig {
     packages?: string[];
@@ -51,6 +51,7 @@ export type RemoteVersions = {
     pinnedAheadOfDist?: number;
     npmAheadOfDist?: number;
     distAheadOfNpm?: number;
+    pinnedSrcMissing?: boolean;
 };
 export interface HooksConfig {
     previousHooksPath?: string;

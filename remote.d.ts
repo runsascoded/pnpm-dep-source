@@ -9,6 +9,7 @@ export declare function getLocalGitInfoAsync(localPath: string): Promise<{
 } | null>;
 export declare function parseDistSourceSha(version: string): string | undefined;
 export declare function gitRevListCountAsync(repoPath: string, base: string, head: string): Promise<number | null>;
+export declare function isCommitReachableAsync(repoPath: string, sha: string): Promise<boolean>;
 export declare function resolveVersionTagAsync(repoPath: string, version: string): Promise<string | undefined>;
 export declare function resolveGitHubRef(repo: string, ref: string): string;
 export declare function resolveGitHubRefAsync(repo: string, ref: string): Promise<string>;

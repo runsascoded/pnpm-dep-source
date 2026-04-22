@@ -2,7 +2,7 @@ import { resolve } from 'path';
 import { log } from './log.js';
 import { c } from './constants.js';
 import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
-import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, } from './remote.js';
+import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, isCommitReachableAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, } from './remote.js';
 export function getSourceType(source) {
     if (source === 'workspace:*' || source === 'local')
         return 'local';
@@ -115,7 +115,8 @@ export function displayDep(info, verbose = false, remoteVersions) {
         }
         else if (isActive && distParts.length && !distParts.every(p => activeSuffix.includes(p))) {
             line(label, true, repo + subdirSuffix, '');
-            console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}`);
+            const lostSuffix = versions?.pinnedSrcMissing ? ` ${c.red}(src lost)${c.reset}` : '';
+            console.log(`      ${c.blue}pinned: ${pinnedParts.join('; ')}${c.reset}${lostSuffix}`);
             console.log(`      ${c.blue}latest: ${distParts.join('; ')}${c.reset}${distDelta}`);
         }
         else {
@@ -245,7 +246,20 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
     const npmVersion = npmInfo?.version;
     const latestDistVersion = (ghPkg?.version ?? glPkg?.version);
     const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined;
-    const pinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined;
+    const rawPinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined;
+    // Orphan detection: if the pinned dist's source SHA is not reachable in the
+    // local repo (likely force-pushed away), flag it and fall back to the latest
+    // dist source as the comparison ref so other deltas remain meaningful.
+    let pinnedSrcMissing = false;
+    let pinnedSourceSha = rawPinnedSourceSha;
+    if (localPath && rawPinnedSourceSha) {
+        const reachable = await isCommitReachableAsync(localPath, rawPinnedSourceSha);
+        if (!reachable) {
+            log.info(`${depName}: pinned source ${rawPinnedSourceSha} not reachable in ${localPath} (likely force-pushed or garbage-collected)`);
+            pinnedSrcMissing = true;
+            pinnedSourceSha = undefined;
+        }
+    }
     let localAheadOfPinned;
     let distAheadOfPinned;
     let pinnedAheadOfDist;
@@ -325,6 +339,7 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
         localAheadOfPinned,
         distAheadOfPinned,
         pinnedAheadOfDist,
+        pinnedSrcMissing: pinnedSrcMissing || undefined,
     };
 }
 // Fetch remote version info for a dependency (sync, for verbose listing)
