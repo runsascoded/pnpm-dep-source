@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y git curl && \
     apt-get update && apt-get install -y gh && \
     rm -rf /var/lib/apt/lists/*
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Install pnpm (pinned to 10.x; pnpm 11 changed `onlyBuiltDependencies` semantics)
+RUN corepack enable && corepack prepare pnpm@10 --activate
 
 # Setup pnpm global directory
 ENV PNPM_HOME=/root/.local/share/pnpm
