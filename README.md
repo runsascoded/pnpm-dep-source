@@ -33,6 +33,9 @@ pds init ../../path/to/local/pkg -s gh   # activate GitHub after init
 pds init ../../path/to/local/pkg -s gl   # activate GitLab after init
 pds init ../../path/to/local/pkg -s g    # auto-detect (errors if ambiguous)
 
+# Multiple paths/URLs in one call (e.g. monorepo sibling packages):
+pds init ../../slidev/packages/{slidev,client,parser}
+
 # Global CLI tools (uses ~/.config/pnpm-dep-source/config.json)
 pds -g init /path/to/local/cli
 ```
@@ -47,24 +50,29 @@ Use `-D` to add as a devDependency, `-I` to skip adding/activation, or `-s <sour
 ### Switch to local development
 
 ```bash
-pds local [dep]    # or pds l [dep]
+pds local [deps...]    # or pds l [deps...]
 ```
 
-Note: `[dep]` is optional if only one dependency is configured.
+Note: deps are optional if only one dependency is configured. Pass multiple deps to switch them all in one call (e.g. monorepo sibling packages):
 
-This will:
+```bash
+pds l slidev client parser    # all three to workspace:*
+```
+
+This will (per dep):
 - Set `package.json` dependency to `workspace:*`
 - Create/update `pnpm-workspace.yaml` with the local path
 - Add to `vite.config.ts` `optimizeDeps.exclude` (if vite config exists)
-- Run `pnpm install`
+
+One `pnpm install` is run at the end (skip with `-I`).
 
 ### Switch to GitHub or GitLab (auto-detect)
 
 ```bash
-pds g [dep]                   # Auto-detects GitHub or GitLab (uses dist branch HEAD)
-pds g [dep] -r v1.0.0         # Resolves ref to SHA
-pds g [dep] -R dist           # Uses ref as-is (pin to branch name)
-pds g [dep] -n                # Dry-run: show what would be installed
+pds g [deps...]                   # Auto-detects GitHub or GitLab (uses dist branch HEAD)
+pds g [deps...] -r v1.0.0         # Resolves ref to SHA (shared across deps)
+pds g [deps...] -R dist           # Uses ref as-is (pin to branch name)
+pds g [deps...] -n                # Dry-run: show what would be installed
 ```
 
 Errors if neither or both are configured; use `pds gh` or `pds gl` explicitly in that case.
@@ -72,43 +80,56 @@ Errors if neither or both are configured; use `pds gh` or `pds gl` explicitly in
 ### Switch to GitHub
 
 ```bash
-pds github [dep]              # Uses dist branch HEAD (resolved to SHA)
-pds gh [dep] -r v1.0.0        # Resolves ref to SHA
-pds gh [dep] -R dist          # Uses ref as-is (pin to branch name)
-pds gh [dep] -n               # Dry-run: show what would be installed
+pds github [deps...]              # Uses dist branch HEAD (resolved to SHA)
+pds gh [deps...] -r v1.0.0        # Resolves ref to SHA
+pds gh [deps...] -R dist          # Uses ref as-is (pin to branch name)
+pds gh [deps...] -n               # Dry-run: show what would be installed
 ```
 
-This will:
+This will (per dep):
 - Set `package.json` dependency to `github:user/repo#sha`
 - Remove local path from `pnpm-workspace.yaml`
 - Remove from `vite.config.ts` `optimizeDeps.exclude`
-- Run `pnpm install`
+
+One `pnpm install` is run at the end (skip with `-I`).
 
 ### Switch to GitLab
 
 ```bash
-pds gitlab [dep]              # Uses dist branch HEAD (resolved to SHA)
-pds gl [dep] -r v1.0.0        # Resolves ref to SHA
-pds gl [dep] -R dist          # Uses ref as-is (pin to branch name)
-pds gl [dep] -n               # Dry-run: show what would be installed
+pds gitlab [deps...]              # Uses dist branch HEAD (resolved to SHA)
+pds gl [deps...] -r v1.0.0        # Resolves ref to SHA
+pds gl [deps...] -R dist          # Uses ref as-is (pin to branch name)
+pds gl [deps...] -n               # Dry-run: show what would be installed
 ```
 
-This will:
+This will (per dep):
 - Set `package.json` dependency to GitLab tarball URL
 - Remove local path from `pnpm-workspace.yaml`
 - Remove from `vite.config.ts` `optimizeDeps.exclude`
-- Run `pnpm install`
+
+One `pnpm install` is run at the end (skip with `-I`).
 
 Note: GitLab uses tarball URLs (e.g. `https://gitlab.com/user/repo/-/archive/ref/repo-ref.tar.gz`) since pnpm doesn't support `gitlab:` prefix.
 
 ### Switch to NPM
 
 ```bash
-pds npm [dep]              # Latest version
-pds npm [dep] [version]    # Specific version
-pds n 1.2.3                # With one dep, arg is treated as version
-pds n [dep] -n             # Dry-run: show what would be installed
+pds npm [deps...]          # Latest version (per dep)
+pds npm [dep] [version]    # Specific version (single dep only)
+pds n 1.2.3                # With one dep configured, arg is treated as version
+pds n [deps...] -n         # Dry-run: show what would be installed
 ```
+
+Note: passing a shared `[version]` across multiple deps is not supported (versions differ per dep) — with 3+ args, all are treated as dep queries.
+
+### Multi-dep behavior
+
+All switch verbs (`l`/`gh`/`gl`/`g`/`n`) and `init` accept multiple deps in one call:
+
+- **One trailing `pnpm install`**: per-dep work runs first, then a single install fires at the end.
+- **Stop on first failure (default)**: if one dep fails, later deps are not processed. Per-dep changes already applied are kept.
+- **`-k`/`--keep-going`**: continue past per-dep failures, log each, and exit non-zero at the end if any failed.
+- **Zero-arg fallback** is unchanged: `pds gh` with no dep query still requires exactly one dep configured (errors otherwise).
 
 ### Check status
 

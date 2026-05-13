@@ -29,6 +29,31 @@ import {
   cleanupDepReferences, runPnpmInstall, runGlobalInstall,
 } from './switch.js'
 
+// Iterate `items`, invoking `fn` on each. On error, abort (default) or
+// continue collecting failures (`keepGoing`). After iteration, if any
+// failures were collected, exit non-zero.
+function runMultiple<T>(
+  items: T[],
+  keepGoing: boolean,
+  fn: (item: T) => void,
+): void {
+  const failures: { item: T; error: unknown }[] = []
+  for (const item of items) {
+    try {
+      fn(item)
+    } catch (err) {
+      if (!keepGoing) throw err
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`${c.red}Error:${c.reset} ${msg}`)
+      failures.push({ item, error: err })
+    }
+  }
+  if (failures.length > 0) {
+    console.error(`${c.red}${failures.length} of ${items.length} failed${c.reset}`)
+    process.exit(1)
+  }
+}
+
 program
   .name('pnpm-dep-source')
   .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
@@ -46,201 +71,221 @@ program
     } catch {}
   })
 
-program
-  .command('init [path-or-url]')
-  .description('Initialize (or reinitialize) a dependency from local path or repo URL and activate it. Re-running init on an existing dep refreshes its config from the local package.json.')
-  .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
-  .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
-  .option('-f, --force', 'Suppress mismatch warnings')
-  .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
-  .option('-I, --no-install', 'Skip running pnpm install')
-  .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
-  .option('-l, --local <path>', 'Local path (when initializing from URL)')
-  .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
-  .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
-  .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, npm (default: local for path, inferred for URL)')
-  .action((pathOrUrl: string | undefined, options: { dev?: boolean; distBranch: string; force?: boolean; github?: string; gitlab?: string; install: boolean; local?: string; npm?: string; rawRef?: string; source?: string }, cmd: { help: () => void }) => {
-    if (!pathOrUrl) {
-      cmd.help()
-      return
-    }
-    const isGlobal = program.opts().global
-    const isUrl = isRepoUrl(pathOrUrl)
-    let pkgInfo: ReturnType<typeof getLocalPackageInfo>
-    let localPath: string | undefined
-    let activateSource: 'local' | 'github' | 'gitlab' | 'npm' | undefined
+type InitOptions = {
+  dev?: boolean
+  distBranch: string
+  force?: boolean
+  github?: string
+  gitlab?: string
+  install: boolean
+  local?: string
+  npm?: string
+  rawRef?: string
+  source?: string
+}
 
-    if (isUrl) {
-      // Fetch package.json from remote repo
-      pkgInfo = getRemotePackageInfo(pathOrUrl)
-      localPath = options.local ? resolve(options.local) : undefined
-      // Determine which source to activate based on URL type
-      if (localPath) {
-        activateSource = 'local'
-      } else if (pkgInfo.github) {
-        activateSource = 'github'
-      } else if (pkgInfo.gitlab) {
-        activateSource = 'gitlab'
-      }
-    } else {
-      // Read from local path
-      localPath = resolve(pathOrUrl)
-      pkgInfo = getLocalPackageInfo(localPath)
+// Per-arg init logic. Returns true when a project-mode install is needed (a
+// project dep was activated). The trailing `pnpm install` is fired once by
+// the outer loop, not per-call.
+function initOne(
+  pathOrUrl: string,
+  options: InitOptions,
+  isGlobal: boolean,
+  projectRoot: string | undefined,
+  workspaceRoot: string | null | undefined,
+): boolean {
+  const isUrl = isRepoUrl(pathOrUrl)
+  let pkgInfo: ReturnType<typeof getLocalPackageInfo>
+  let localPath: string | undefined
+  let activateSource: 'local' | 'github' | 'gitlab' | 'npm' | undefined
+
+  if (isUrl) {
+    pkgInfo = getRemotePackageInfo(pathOrUrl)
+    localPath = options.local ? resolve(options.local) : undefined
+    if (localPath) {
       activateSource = 'local'
+    } else if (pkgInfo.github) {
+      activateSource = 'github'
+    } else if (pkgInfo.gitlab) {
+      activateSource = 'gitlab'
     }
+  } else {
+    localPath = resolve(pathOrUrl)
+    pkgInfo = getLocalPackageInfo(localPath)
+    activateSource = 'local'
+  }
 
-    // --source flag overrides the default activation source (resolve 'g'/'git' after config is built)
-    let sourceFlag: string | undefined
-    if (options.source) {
-      const s = options.source.toLowerCase()
-      if (s === 'local' || s === 'l') activateSource = 'local'
-      else if (s === 'github' || s === 'gh') activateSource = 'github'
-      else if (s === 'gitlab' || s === 'gl') activateSource = 'gitlab'
-      else if (s === 'git' || s === 'g') sourceFlag = 'git'  // resolve after we know github/gitlab
-      else if (s === 'npm' || s === 'n') activateSource = 'npm'
-      else throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, npm`)
+  // --source flag overrides the default activation source (resolve 'g'/'git' after config is built)
+  let sourceFlag: string | undefined
+  if (options.source) {
+    const s = options.source.toLowerCase()
+    if (s === 'local' || s === 'l') activateSource = 'local'
+    else if (s === 'github' || s === 'gh') activateSource = 'github'
+    else if (s === 'gitlab' || s === 'gl') activateSource = 'gitlab'
+    else if (s === 'git' || s === 'g') sourceFlag = 'git'
+    else if (s === 'npm' || s === 'n') activateSource = 'npm'
+    else throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, npm`)
+  }
+
+  const pkgName = pkgInfo.name
+
+  if (!options.force) {
+    if (options.github && pkgInfo.github && options.github !== pkgInfo.github) {
+      console.warn(`Warning: GitHub '${options.github}' differs from package.json '${pkgInfo.github}'`)
     }
-
-    const pkgName = pkgInfo.name
-
-    // Warn on mismatches (unless --force)
-    if (!options.force) {
-      if (options.github && pkgInfo.github && options.github !== pkgInfo.github) {
-        console.warn(`Warning: GitHub '${options.github}' differs from package.json '${pkgInfo.github}'`)
-      }
-      if (options.gitlab && pkgInfo.gitlab && options.gitlab !== pkgInfo.gitlab) {
-        console.warn(`Warning: GitLab '${options.gitlab}' differs from package.json '${pkgInfo.gitlab}'`)
-      }
-      if (options.npm && options.npm !== pkgName) {
-        console.warn(`Warning: NPM name '${options.npm}' differs from package.json '${pkgName}'`)
-      }
+    if (options.gitlab && pkgInfo.gitlab && options.gitlab !== pkgInfo.gitlab) {
+      console.warn(`Warning: GitLab '${options.gitlab}' differs from package.json '${pkgInfo.gitlab}'`)
     }
-
-    let npmName: string | undefined
-    if (options.npm !== undefined) {
-      npmName = options.npm
-    } else if (pkgInfo.private) {
-      npmName = undefined
-    } else if (npmPackageExists(pkgName)) {
-      npmName = pkgName
+    if (options.npm && options.npm !== pkgName) {
+      console.warn(`Warning: NPM name '${options.npm}' differs from package.json '${pkgName}'`)
     }
-    const github = options.github ?? pkgInfo.github
-    const gitlab = options.gitlab ?? pkgInfo.gitlab
-    const subdir = 'subdir' in pkgInfo ? (pkgInfo as { subdir?: string }).subdir : undefined
+  }
 
-    // Resolve -s git/g now that we know which remotes are configured
-    if (sourceFlag === 'git') {
-      if (github && gitlab) {
-        throw new Error(`Both GitHub and GitLab configured for ${pkgName}. Use -s gh or -s gl explicitly.`)
-      } else if (github) {
-        activateSource = 'github'
-      } else if (gitlab) {
-        activateSource = 'gitlab'
-      } else {
-        throw new Error(`No GitHub or GitLab repo configured for ${pkgName}. Use -H or -L to specify one.`)
-      }
+  let npmName: string | undefined
+  if (options.npm !== undefined) {
+    npmName = options.npm
+  } else if (pkgInfo.private) {
+    npmName = undefined
+  } else if (npmPackageExists(pkgName)) {
+    npmName = pkgName
+  }
+  const github = options.github ?? pkgInfo.github
+  const gitlab = options.gitlab ?? pkgInfo.gitlab
+  const subdir = 'subdir' in pkgInfo ? (pkgInfo as { subdir?: string }).subdir : undefined
+
+  if (sourceFlag === 'git') {
+    if (github && gitlab) {
+      throw new Error(`Both GitHub and GitLab configured for ${pkgName}. Use -s gh or -s gl explicitly.`)
+    } else if (github) {
+      activateSource = 'github'
+    } else if (gitlab) {
+      activateSource = 'gitlab'
+    } else {
+      throw new Error(`No GitHub or GitLab repo configured for ${pkgName}. Use -H or -L to specify one.`)
     }
+  }
 
-    if (isGlobal) {
-      const config = loadGlobalConfig()
-      config.dependencies[pkgName] = {
-        localPath,
-        github,
-        gitlab,
-        npm: npmName,
-        distBranch: options.distBranch,
-        subdir,
-      }
-      saveGlobalConfig(config)
-      console.log(`Initialized ${pkgName} (global):`)
-      if (localPath) console.log(`  Local path: ${localPath}`)
-      if (github) console.log(`  GitHub: ${github}`)
-      if (gitlab) console.log(`  GitLab: ${gitlab}`)
-      if (subdir) console.log(`  Subdir: ${subdir}`)
-      if (npmName) console.log(`  NPM: ${npmName}`)
-      console.log(`  Dist branch: ${options.distBranch}`)
-
-      // Activate for global: install from local path if provided
-      if (localPath) {
-        runGlobalInstall(`file:${localPath}`)
-        console.log(`Installed ${pkgName} globally from local: ${localPath}`)
-      }
-      return
-    }
-
-    const projectRoot = findProjectRoot()
-    const workspaceRoot = findWorkspaceRoot(projectRoot)
-    const config = loadConfig(projectRoot)
-    const relLocalPath = localPath ? relative(projectRoot, localPath) : undefined
-
-    const depConfig: DepConfig = {
-      localPath: relLocalPath,
+  if (isGlobal) {
+    const config = loadGlobalConfig()
+    config.dependencies[pkgName] = {
+      localPath,
       github,
       gitlab,
       npm: npmName,
       distBranch: options.distBranch,
       subdir,
     }
-    config.dependencies[pkgName] = depConfig
-
-    saveConfig(projectRoot, config)
-    console.log(`Initialized ${pkgName}:`)
-    if (relLocalPath) console.log(`  Local path: ${relLocalPath}`)
+    saveGlobalConfig(config)
+    console.log(`Initialized ${pkgName} (global):`)
+    if (localPath) console.log(`  Local path: ${localPath}`)
     if (github) console.log(`  GitHub: ${github}`)
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
     if (subdir) console.log(`  Subdir: ${subdir}`)
     if (npmName) console.log(`  NPM: ${npmName}`)
     console.log(`  Dist branch: ${options.distBranch}`)
 
-    // Activate the dependency based on input type
-    // If dep not in package.json, add it first
-    const pkg = loadPackageJson(projectRoot)
-    const needsAdd = !hasDependency(pkg, pkgName)
-
-    if (needsAdd) {
-      // Add a placeholder that will be replaced by the switch function
-      addDependency(pkg, pkgName, '*', !!options.dev)
-      savePackageJson(projectRoot, pkg)
-      console.log(`Added ${pkgName} to ${options.dev ? 'devDependencies' : 'dependencies'}`)
-    } else if (options.dev) {
-      // Move existing dep to devDependencies if -D specified
-      const deps = pkg.dependencies as Record<string, string> | undefined
-      if (deps && pkgName in deps) {
-        const specifier = deps[pkgName]
-        delete deps[pkgName]
-        addDependency(pkg, pkgName, specifier, true)
-        savePackageJson(projectRoot, pkg)
-        console.log(`Moved ${pkgName} to devDependencies`)
-      }
+    if (localPath) {
+      runGlobalInstall(`file:${localPath}`)
+      console.log(`Installed ${pkgName} globally from local: ${localPath}`)
     }
+    return false
+  }
 
-    if (activateSource === 'local' && relLocalPath) {
-      switchToLocal(projectRoot, pkgName, relLocalPath, workspaceRoot)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
+  const config = loadConfig(projectRoot!)
+  const relLocalPath = localPath ? relative(projectRoot!, localPath) : undefined
+
+  const depConfig: DepConfig = {
+    localPath: relLocalPath,
+    github,
+    gitlab,
+    npm: npmName,
+    distBranch: options.distBranch,
+    subdir,
+  }
+  config.dependencies[pkgName] = depConfig
+
+  saveConfig(projectRoot!, config)
+  console.log(`Initialized ${pkgName}:`)
+  if (relLocalPath) console.log(`  Local path: ${relLocalPath}`)
+  if (github) console.log(`  GitHub: ${github}`)
+  if (gitlab) console.log(`  GitLab: ${gitlab}`)
+  if (subdir) console.log(`  Subdir: ${subdir}`)
+  if (npmName) console.log(`  NPM: ${npmName}`)
+  console.log(`  Dist branch: ${options.distBranch}`)
+
+  const pkg = loadPackageJson(projectRoot!)
+  const needsAdd = !hasDependency(pkg, pkgName)
+
+  if (needsAdd) {
+    addDependency(pkg, pkgName, '*', !!options.dev)
+    savePackageJson(projectRoot!, pkg)
+    console.log(`Added ${pkgName} to ${options.dev ? 'devDependencies' : 'dependencies'}`)
+  } else if (options.dev) {
+    const deps = pkg.dependencies as Record<string, string> | undefined
+    if (deps && pkgName in deps) {
+      const specifier = deps[pkgName]
+      delete deps[pkgName]
+      addDependency(pkg, pkgName, specifier, true)
+      savePackageJson(projectRoot!, pkg)
+      console.log(`Moved ${pkgName} to devDependencies`)
+    }
+  }
+
+  if (activateSource === 'local' && relLocalPath) {
+    switchToLocal(projectRoot!, pkgName, relLocalPath, workspaceRoot)
+    return true
+  } else if (activateSource === 'github') {
+    if (!github) throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`)
+    switchToGitHub(projectRoot!, pkgName, depConfig, options.rawRef, workspaceRoot)
+    return true
+  } else if (activateSource === 'gitlab') {
+    if (!gitlab) throw new Error(`No GitLab repo configured for ${pkgName}. Use -L/--gitlab to specify one.`)
+    switchToGitLab(projectRoot!, pkgName, depConfig, options.rawRef, workspaceRoot)
+    return true
+  } else if (activateSource === 'npm' || (needsAdd && !activateSource && (depConfig.npm || npmPackageExists(pkgName)))) {
+    const npmPkgName = depConfig.npm ?? pkgName
+    const latestVersion = getLatestNpmVersion(npmPkgName)
+    const pkgUpdated = loadPackageJson(projectRoot!)
+    updatePackageJsonDep(pkgUpdated, pkgName, `^${latestVersion}`)
+    savePackageJson(projectRoot!, pkgUpdated)
+    console.log(`Set ${pkgName} to npm: ^${latestVersion}`)
+    return true
+  }
+  return false
+}
+
+program
+  .command('init [paths-or-urls...]')
+  .description('Initialize (or reinitialize) one or more dependencies from local paths or repo URLs and activate them. Re-running init on an existing dep refreshes its config from the local package.json.')
+  .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
+  .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
+  .option('-f, --force', 'Suppress mismatch warnings')
+  .option('-H, --github <repo>', 'GitHub repo (e.g. "user/repo")')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
+  .option('-l, --local <path>', 'Local path (when initializing from URL)')
+  .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
+  .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
+  .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, npm (default: local for path, inferred for URL)')
+  .action((pathsOrUrls: string[], options: InitOptions & { keepGoing?: boolean }, cmd: { help: () => void }) => {
+    if (pathsOrUrls.length === 0) {
+      cmd.help()
+      return
+    }
+    const isGlobal = program.opts().global
+    const projectRoot = isGlobal ? undefined : findProjectRoot()
+    const workspaceRoot = isGlobal ? undefined : findWorkspaceRoot(projectRoot!)
+    let anyMutation = false
+
+    runMultiple(pathsOrUrls, !!options.keepGoing, pathOrUrl => {
+      if (initOne(pathOrUrl, options, isGlobal, projectRoot, workspaceRoot)) {
+        anyMutation = true
       }
-    } else if (activateSource === 'github') {
-      if (!github) throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`)
-      switchToGitHub(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
-      }
-    } else if (activateSource === 'gitlab') {
-      if (!gitlab) throw new Error(`No GitLab repo configured for ${pkgName}. Use -L/--gitlab to specify one.`)
-      switchToGitLab(projectRoot, pkgName, depConfig, options.rawRef, workspaceRoot)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
-      }
-    } else if (activateSource === 'npm' || (needsAdd && !activateSource && (depConfig.npm || npmPackageExists(pkgName)))) {
-      const npmPkgName = depConfig.npm ?? pkgName
-      const latestVersion = getLatestNpmVersion(npmPkgName)
-      const pkgUpdated = loadPackageJson(projectRoot)
-      updatePackageJsonDep(pkgUpdated, pkgName, `^${latestVersion}`)
-      savePackageJson(projectRoot, pkgUpdated)
-      console.log(`Set ${pkgName} to npm: ^${latestVersion}`)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
-      }
+    })
+
+    if (!isGlobal && anyMutation && options.install) {
+      runPnpmInstall(projectRoot!, workspaceRoot)
     }
   })
 
@@ -546,50 +591,39 @@ program
   })
 
 program
-  .command('local [dep]')
+  .command('local [deps...]')
   .alias('l')
-  .description('Switch dependency to local directory')
+  .description('Switch dependencies to local directory')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { install: boolean }) => {
-    if (program.opts().global) {
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .action((deps: string[], options: { install: boolean; keepGoing?: boolean }) => {
+    const queries: (string | undefined)[] = deps.length ? deps : [undefined]
+    const isGlobal = program.opts().global
+
+    if (isGlobal) {
       const config = loadGlobalConfig()
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
-      runGlobalInstall(`file:${depConfig.localPath}`)
-      console.log(`Installed ${depName} globally from local: ${depConfig.localPath}`)
+      runMultiple(queries, !!options.keepGoing, depQuery => {
+        const [depName, depConfig] = findMatchingDep(config, depQuery)
+        if (!depConfig.localPath) {
+          throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
+        }
+        runGlobalInstall(`file:${depConfig.localPath}`)
+        console.log(`Installed ${depName} globally from local: ${depConfig.localPath}`)
+      })
       return
     }
 
     const projectRoot = findProjectRoot()
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     const config = loadConfig(projectRoot)
-    const [depName, depConfig] = findMatchingDep(config, depQuery)
 
-    if (!depConfig.localPath) {
-      console.error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
-      process.exit(1)
-    }
-
-    const absLocalPath = resolve(projectRoot, depConfig.localPath)
-
-    const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, 'workspace:*')
-    savePackageJson(projectRoot, pkg)
-
-    // Update pnpm-workspace.yaml
-    const wsRoot = workspaceRoot ?? projectRoot
-    const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] }
-    if (!ws.packages) ws.packages = workspaceRoot ? [] : ['.']
-    if (!workspaceRoot && !ws.packages.includes('.')) ws.packages.unshift('.')
-    const wsLocalPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-    if (!ws.packages.includes(wsLocalPath)) {
-      ws.packages.push(wsLocalPath)
-    }
-    saveWorkspaceYaml(wsRoot, ws)
-
-    // Update vite.config.ts
-    updateViteConfig(projectRoot, depName, true)
-
-    console.log(`Switched ${depName} to local: ${absLocalPath}`)
+    runMultiple(queries, !!options.keepGoing, depQuery => {
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      if (!depConfig.localPath) {
+        throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
+      }
+      switchToLocal(projectRoot, depName, depConfig.localPath, workspaceRoot)
+    })
 
     if (options.install) {
       runPnpmInstall(projectRoot, workspaceRoot)
@@ -597,333 +631,337 @@ program
   })
 
 program
-  .command('github [dep]')
+  .command('github [deps...]')
   .aliases(['gh'])
-  .description('Switch dependency to GitHub ref (defaults to dist branch HEAD)')
+  .description('Switch dependencies to GitHub ref (defaults to dist branch HEAD)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const isGlobal = program.opts().global
-    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const [depName, depConfig] = findMatchingDep(config, depQuery)
-
-    if (!depConfig.github) {
-      throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -G/--github`)
-    }
-
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
+    const queries: (string | undefined)[] = deps.length ? deps : [undefined]
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
 
-    const distBranch = depConfig.distBranch ?? 'dist'
-
-    let resolvedRef: string
-    if (options.rawRef) {
-      // Raw ref: use as-is
-      resolvedRef = options.rawRef
-    } else if (options.ref) {
-      // Ref provided: resolve to SHA
-      resolvedRef = resolveGitHubRef(depConfig.github, options.ref)
-    } else {
-      // No ref provided: use dist branch, resolve to SHA
-      resolvedRef = resolveGitHubRef(depConfig.github, distBranch)
-    }
-
-    const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
-
-    if (options.dryRun) {
-      console.log(`Would switch ${depName} to: ${specifier}`)
-      return
+    const resolveRef = (github: string, distBranch: string): string => {
+      if (options.rawRef) return options.rawRef
+      if (options.ref) return resolveGitHubRef(github, options.ref)
+      return resolveGitHubRef(github, distBranch)
     }
 
     if (isGlobal) {
-      runGlobalInstall(specifier)
-      console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
+      runMultiple(queries, !!options.keepGoing, depQuery => {
+        const [depName, depConfig] = findMatchingDep(config, depQuery)
+        if (!depConfig.github) {
+          throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`)
+        }
+        const distBranch = depConfig.distBranch ?? 'dist'
+        const resolvedRef = resolveRef(depConfig.github, distBranch)
+        const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
+        if (options.dryRun) {
+          console.log(`Would switch ${depName} to: ${specifier}`)
+          return
+        }
+        runGlobalInstall(specifier)
+        console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
+      })
       return
     }
 
     const projectRoot = findProjectRoot()
     const workspaceRoot = findWorkspaceRoot(projectRoot)
+    let anyMutation = false
 
-    const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, specifier)
-    removePnpmOverride(pkg, depName)
-    savePackageJson(projectRoot, pkg)
-
-    // Remove from pnpm-workspace.yaml
-    if (depConfig.localPath) {
-      const wsRoot = workspaceRoot ?? projectRoot
-      const ws = loadWorkspaceYaml(wsRoot)
-      if (ws?.packages) {
-        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-        ws.packages = ws.packages.filter(p => p !== wsPath)
-        if (workspaceRoot) {
-          saveWorkspaceYaml(wsRoot, ws)
-        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-          saveWorkspaceYaml(wsRoot, null)
-        } else {
-          saveWorkspaceYaml(wsRoot, ws)
-        }
+    runMultiple(queries, !!options.keepGoing, depQuery => {
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      if (!depConfig.github) {
+        throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`)
       }
-    }
+      const distBranch = depConfig.distBranch ?? 'dist'
+      const resolvedRef = resolveRef(depConfig.github, distBranch)
+      if (options.dryRun) {
+        const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
+        console.log(`Would switch ${depName} to: ${specifier}`)
+        return
+      }
+      switchToGitHub(projectRoot, depName, depConfig, resolvedRef, workspaceRoot)
+      anyMutation = true
+    })
 
-    // Remove from vite.config.ts optimizeDeps.exclude
-    updateViteConfig(projectRoot, depName, false)
-
-    console.log(`Switched ${depName} to GitHub: ${depConfig.github}#${resolvedRef}`)
-
-    if (options.install) {
+    if (anyMutation && options.install) {
       runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
 program
-  .command('gitlab [dep]')
+  .command('gitlab [deps...]')
   .aliases(['gl'])
-  .description('Switch dependency to GitLab ref (defaults to dist branch HEAD)')
+  .description('Switch dependencies to GitLab ref (defaults to dist branch HEAD)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const isGlobal = program.opts().global
-    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const [depName, depConfig] = findMatchingDep(config, depQuery)
-
-    if (!depConfig.gitlab) {
-      throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -l/--gitlab`)
-    }
-
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
+    const queries: (string | undefined)[] = deps.length ? deps : [undefined]
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
 
-    const distBranch = depConfig.distBranch ?? 'dist'
-
-    let resolvedRef: string
-    if (options.rawRef) {
-      // Raw ref: use as-is
-      resolvedRef = options.rawRef
-    } else if (options.ref) {
-      // Ref provided: resolve to SHA
-      resolvedRef = resolveGitLabRef(depConfig.gitlab, options.ref)
-    } else {
-      // No ref provided: use dist branch, resolve to SHA
-      resolvedRef = resolveGitLabRef(depConfig.gitlab, distBranch)
+    const resolveRef = (gitlab: string, distBranch: string): string => {
+      if (options.rawRef) return options.rawRef
+      if (options.ref) return resolveGitLabRef(gitlab, options.ref)
+      return resolveGitLabRef(gitlab, distBranch)
     }
-
-    // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
-    // Format: https://gitlab.com/{repo}/-/archive/{ref}/{basename}-{ref}.tar.gz
-    const repoBasename = depConfig.gitlab.split('/').pop()
-    const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`
-
-    if (options.dryRun) {
-      console.log(`Would switch ${depName} to: ${tarballUrl}`)
-      return
+    const tarballUrlFor = (gitlab: string, ref: string): string => {
+      const repoBasename = gitlab.split('/').pop()
+      return `https://gitlab.com/${gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`
     }
 
     if (isGlobal) {
-      runGlobalInstall(tarballUrl)
-      console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+      runMultiple(queries, !!options.keepGoing, depQuery => {
+        const [depName, depConfig] = findMatchingDep(config, depQuery)
+        if (!depConfig.gitlab) {
+          throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`)
+        }
+        const distBranch = depConfig.distBranch ?? 'dist'
+        const resolvedRef = resolveRef(depConfig.gitlab, distBranch)
+        const tarballUrl = tarballUrlFor(depConfig.gitlab, resolvedRef)
+        if (options.dryRun) {
+          console.log(`Would switch ${depName} to: ${tarballUrl}`)
+          return
+        }
+        runGlobalInstall(tarballUrl)
+        console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+      })
       return
     }
 
     const projectRoot = findProjectRoot()
     const workspaceRoot = findWorkspaceRoot(projectRoot)
+    let anyMutation = false
 
-    const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, tarballUrl)
-    removePnpmOverride(pkg, depName)
-    savePackageJson(projectRoot, pkg)
-
-    // Remove from pnpm-workspace.yaml
-    if (depConfig.localPath) {
-      const wsRoot = workspaceRoot ?? projectRoot
-      const ws = loadWorkspaceYaml(wsRoot)
-      if (ws?.packages) {
-        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-        ws.packages = ws.packages.filter(p => p !== wsPath)
-        if (workspaceRoot) {
-          saveWorkspaceYaml(wsRoot, ws)
-        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-          saveWorkspaceYaml(wsRoot, null)
-        } else {
-          saveWorkspaceYaml(wsRoot, ws)
-        }
+    runMultiple(queries, !!options.keepGoing, depQuery => {
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      if (!depConfig.gitlab) {
+        throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`)
       }
-    }
+      const distBranch = depConfig.distBranch ?? 'dist'
+      const resolvedRef = resolveRef(depConfig.gitlab, distBranch)
+      if (options.dryRun) {
+        const tarballUrl = tarballUrlFor(depConfig.gitlab, resolvedRef)
+        console.log(`Would switch ${depName} to: ${tarballUrl}`)
+        return
+      }
+      switchToGitLab(projectRoot, depName, depConfig, resolvedRef, workspaceRoot)
+      anyMutation = true
+    })
 
-    // Remove from vite.config.ts optimizeDeps.exclude
-    updateViteConfig(projectRoot, depName, false)
-
-    console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
-
-    if (options.install) {
+    if (anyMutation && options.install) {
       runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
 
 program
-  .command('git [dep]')
+  .command('git [deps...]')
   .alias('g')
-  .description('Switch dependency to GitHub or GitLab (auto-detects which is configured)')
+  .description('Switch dependencies to GitHub or GitLab (auto-detects which is configured)')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
-  .action((depQuery: string | undefined, options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean }) => {
-    const isGlobal = program.opts().global
-    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const [depName, depConfig] = findMatchingDep(config, depQuery)
-
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
+    const queries: (string | undefined)[] = deps.length ? deps : [undefined]
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
 
-    const hasGitHub = !!depConfig.github
-    const hasGitLab = !!depConfig.gitlab
-
-    if (!hasGitHub && !hasGitLab) {
-      throw new Error(`No GitHub or GitLab repo configured for ${depName}. Use "pds init" with -H or -L`)
+    if (isGlobal) {
+      runMultiple(queries, !!options.keepGoing, depQuery => {
+        const [depName, depConfig] = findMatchingDep(config, depQuery)
+        const hasGitHub = !!depConfig.github
+        const hasGitLab = !!depConfig.gitlab
+        if (!hasGitHub && !hasGitLab) {
+          throw new Error(`No GitHub or GitLab repo configured for ${depName}. Use "pds init" with -H or -L`)
+        }
+        if (hasGitHub && hasGitLab) {
+          throw new Error(`Both GitHub and GitLab configured for ${depName}. Use "pds gh" or "pds gl" explicitly`)
+        }
+        const distBranch = depConfig.distBranch ?? 'dist'
+        if (hasGitHub) {
+          const ref = options.rawRef
+            ?? (options.ref ? resolveGitHubRef(depConfig.github!, options.ref) : resolveGitHubRef(depConfig.github!, distBranch))
+          const specifier = makeGitHubSpecifier(depConfig.github!, ref, depConfig.subdir)
+          if (options.dryRun) {
+            console.log(`Would switch ${depName} to: ${specifier}`)
+            return
+          }
+          runGlobalInstall(specifier)
+          console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
+        } else {
+          const ref = options.rawRef
+            ?? (options.ref ? resolveGitLabRef(depConfig.gitlab!, options.ref) : resolveGitLabRef(depConfig.gitlab!, distBranch))
+          const repoBasename = depConfig.gitlab!.split('/').pop()
+          const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`
+          if (options.dryRun) {
+            console.log(`Would switch ${depName} to: ${tarballUrl}`)
+            return
+          }
+          runGlobalInstall(tarballUrl)
+          console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`)
+        }
+      })
+      return
     }
-    if (hasGitHub && hasGitLab) {
-      throw new Error(`Both GitHub and GitLab configured for ${depName}. Use "pds gh" or "pds gl" explicitly`)
+
+    const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
+    let anyMutation = false
+
+    runMultiple(queries, !!options.keepGoing, depQuery => {
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const hasGitHub = !!depConfig.github
+      const hasGitLab = !!depConfig.gitlab
+      if (!hasGitHub && !hasGitLab) {
+        throw new Error(`No GitHub or GitLab repo configured for ${depName}. Use "pds init" with -H or -L`)
+      }
+      if (hasGitHub && hasGitLab) {
+        throw new Error(`Both GitHub and GitLab configured for ${depName}. Use "pds gh" or "pds gl" explicitly`)
+      }
+      const distBranch = depConfig.distBranch ?? 'dist'
+      if (hasGitHub) {
+        const ref = options.rawRef
+          ?? (options.ref ? resolveGitHubRef(depConfig.github!, options.ref) : resolveGitHubRef(depConfig.github!, distBranch))
+        if (options.dryRun) {
+          const specifier = makeGitHubSpecifier(depConfig.github!, ref, depConfig.subdir)
+          console.log(`Would switch ${depName} to: ${specifier}`)
+          return
+        }
+        switchToGitHub(projectRoot, depName, depConfig, ref, workspaceRoot)
+        anyMutation = true
+      } else {
+        const ref = options.rawRef
+          ?? (options.ref ? resolveGitLabRef(depConfig.gitlab!, options.ref) : resolveGitLabRef(depConfig.gitlab!, distBranch))
+        if (options.dryRun) {
+          const repoBasename = depConfig.gitlab!.split('/').pop()
+          const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`
+          console.log(`Would switch ${depName} to: ${tarballUrl}`)
+          return
+        }
+        switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRoot)
+        anyMutation = true
+      }
+    })
+
+    if (anyMutation && options.install) {
+      runPnpmInstall(projectRoot, workspaceRoot)
+    }
+  })
+
+program
+  .command('npm [args...]')
+  .alias('n')
+  .description('Switch dependencies to NPM (defaults to latest). With 1-2 args, last may be a version (must start with digit).')
+  .option('-n, --dry-run', 'Show what would be installed without making changes')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .action((args: string[], options: { dryRun?: boolean; install: boolean; keepGoing?: boolean }) => {
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    const deps = Object.entries(config.dependencies)
+
+    // Disambiguate args. Versions start with a digit; anything else is a dep query.
+    //   []                                 → [undefined], no version
+    //   [arg1] where exactly 1 dep & digit → [undefined], version=arg1
+    //   [arg1]                             → [arg1], no version
+    //   [arg1, arg2] where arg2 is digit   → [arg1], version=arg2  (single-dep + explicit version)
+    //   [arg1, ...]                        → all args as queries, no version
+    let queries: (string | undefined)[]
+    let version: string | undefined
+    if (args.length === 0) {
+      queries = [undefined]
+    } else if (args.length === 1) {
+      if (deps.length === 1 && /^\d/.test(args[0])) {
+        queries = [undefined]
+        version = args[0]
+      } else {
+        queries = [args[0]]
+      }
+    } else if (args.length === 2 && /^\d/.test(args[1])) {
+      queries = [args[0]]
+      version = args[1]
+    } else {
+      queries = args
     }
 
-    const distBranch = depConfig.distBranch ?? 'dist'
-
-    // Determine the ref to use
-    let resolvedRef: string | undefined
-    if (options.rawRef) {
-      resolvedRef = options.rawRef
-    } else if (options.ref) {
-      // Resolve via the appropriate API
-      resolvedRef = hasGitHub
-        ? resolveGitHubRef(depConfig.github!, options.ref)
-        : resolveGitLabRef(depConfig.gitlab!, options.ref)
+    if (isGlobal) {
+      runMultiple(queries, !!options.keepGoing, depQuery => {
+        const [depName, depConfig] = findMatchingDep(config, depQuery)
+        const npmName = depConfig.npm ?? depName
+        const resolvedVersion = version ?? getLatestNpmVersion(npmName)
+        const specifier = `^${resolvedVersion}`
+        if (options.dryRun) {
+          console.log(`Would switch ${depName} to: ${specifier}`)
+          return
+        }
+        runGlobalInstall(`${npmName}@${resolvedVersion}`)
+        console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`)
+      })
+      return
     }
 
-    // Resolve ref for dry-run or actual switch
-    if (hasGitHub) {
-      const ref = resolvedRef ?? resolveGitHubRef(depConfig.github!, distBranch)
-      const specifier = makeGitHubSpecifier(depConfig.github!, ref, depConfig.subdir)
+    const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
+    let anyMutation = false
 
+    runMultiple(queries, !!options.keepGoing, depQuery => {
+      const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const npmName = depConfig.npm ?? depName
+      const resolvedVersion = version ?? getLatestNpmVersion(npmName)
+      const specifier = `^${resolvedVersion}`
       if (options.dryRun) {
         console.log(`Would switch ${depName} to: ${specifier}`)
         return
       }
 
-      if (isGlobal) {
-        runGlobalInstall(specifier)
-        console.log(`Installed ${depName} globally from GitHub: ${specifier}`)
-        return
-      }
+      const pkg = loadPackageJson(projectRoot)
+      updatePackageJsonDep(pkg, depName, specifier)
+      removePnpmOverride(pkg, depName)
+      savePackageJson(projectRoot, pkg)
 
-      const projectRoot = findProjectRoot()
-      const workspaceRoot = findWorkspaceRoot(projectRoot)
-      switchToGitHub(projectRoot, depName, depConfig, ref, workspaceRoot)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
-      }
-    } else {
-      const ref = resolvedRef ?? resolveGitLabRef(depConfig.gitlab!, distBranch)
-      const repoBasename = depConfig.gitlab!.split('/').pop()
-      const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`
-
-      if (options.dryRun) {
-        console.log(`Would switch ${depName} to: ${tarballUrl}`)
-        return
-      }
-
-      if (isGlobal) {
-        runGlobalInstall(tarballUrl)
-        console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`)
-        return
-      }
-
-      const projectRoot = findProjectRoot()
-      const workspaceRoot = findWorkspaceRoot(projectRoot)
-      switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRoot)
-      if (options.install) {
-        runPnpmInstall(projectRoot, workspaceRoot)
-      }
-    }
-  })
-
-program
-  .command('npm [dep] [version]')
-  .alias('n')
-  .description('Switch dependency to NPM (defaults to latest)')
-  .option('-n, --dry-run', 'Show what would be installed without making changes')
-  .option('-I, --no-install', 'Skip running pnpm install')
-  .action((arg1: string | undefined, arg2: string | undefined, options: { dryRun?: boolean; install: boolean }) => {
-    const isGlobal = program.opts().global
-    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
-    const deps = Object.entries(config.dependencies)
-
-    // If only one arg and exactly one dep configured, decide whether it's a version or dep query.
-    // Versions start with a digit; anything else is a dep query (substring match).
-    let depQuery: string | undefined
-    let version: string | undefined
-    if (arg1 && !arg2 && deps.length === 1 && /^\d/.test(arg1)) {
-      depQuery = undefined
-      version = arg1
-    } else {
-      depQuery = arg1
-      version = arg2
-    }
-
-    const [depName, depConfig] = findMatchingDep(config, depQuery)
-
-    const npmName = depConfig.npm ?? depName
-    // Resolve latest version from NPM if not specified
-    const resolvedVersion = version ?? getLatestNpmVersion(npmName)
-    const specifier = `^${resolvedVersion}`
-
-    if (options.dryRun) {
-      console.log(`Would switch ${depName} to: ${specifier}`)
-      return
-    }
-
-    if (isGlobal) {
-      runGlobalInstall(`${npmName}@${resolvedVersion}`)
-      console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`)
-      return
-    }
-
-    const projectRoot = findProjectRoot()
-    const workspaceRoot = findWorkspaceRoot(projectRoot)
-
-    const pkg = loadPackageJson(projectRoot)
-    updatePackageJsonDep(pkg, depName, specifier)
-    removePnpmOverride(pkg, depName)
-    savePackageJson(projectRoot, pkg)
-
-    // Remove from pnpm-workspace.yaml
-    if (depConfig.localPath) {
-      const wsRoot = workspaceRoot ?? projectRoot
-      const ws = loadWorkspaceYaml(wsRoot)
-      if (ws?.packages) {
-        const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-        ws.packages = ws.packages.filter(p => p !== wsPath)
-        if (workspaceRoot) {
-          saveWorkspaceYaml(wsRoot, ws)
-        } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-          saveWorkspaceYaml(wsRoot, null)
-        } else {
-          saveWorkspaceYaml(wsRoot, ws)
+      // Remove from pnpm-workspace.yaml
+      if (depConfig.localPath) {
+        const wsRoot = workspaceRoot ?? projectRoot
+        const ws = loadWorkspaceYaml(wsRoot)
+        if (ws?.packages) {
+          const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
+          ws.packages = ws.packages.filter(p => p !== wsPath)
+          if (workspaceRoot) {
+            saveWorkspaceYaml(wsRoot, ws)
+          } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
+            saveWorkspaceYaml(wsRoot, null)
+          } else {
+            saveWorkspaceYaml(wsRoot, ws)
+          }
         }
       }
-    }
 
-    // Remove from vite.config.ts optimizeDeps.exclude
-    updateViteConfig(projectRoot, depName, false)
+      updateViteConfig(projectRoot, depName, false)
 
-    console.log(`Switched ${depName} to NPM: ${specifier}`)
+      console.log(`Switched ${depName} to NPM: ${specifier}`)
+      anyMutation = true
+    })
 
-    if (options.install) {
+    if (anyMutation && options.install) {
       runPnpmInstall(projectRoot, workspaceRoot)
     }
   })
