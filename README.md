@@ -2,7 +2,9 @@
 
 [![npm version](https://img.shields.io/npm/v/pnpm-dep-source)](https://www.npmjs.com/package/pnpm-dep-source)
 
-CLI to switch pnpm dependencies between local, GitHub / GitLab, and NPM sources.
+CLI to switch pnpm dependencies between local, GitHub / GitLab, [pkg.pr.new], and NPM sources.
+
+[pkg.pr.new]: https://pkg.pr.new
 
 ## Installation
 
@@ -32,6 +34,7 @@ pds init ../../path/to/local/pkg -L gitlab-user/repo
 pds init ../../path/to/local/pkg -s gh   # activate GitHub after init
 pds init ../../path/to/local/pkg -s gl   # activate GitLab after init
 pds init ../../path/to/local/pkg -s g    # auto-detect (errors if ambiguous)
+pds init ../../path/to/local/pkg -s cr   # activate pkg.pr.new after init
 
 # Multiple paths/URLs in one call (e.g. monorepo sibling packages):
 pds init ../../slidev/packages/{slidev,client,parser}
@@ -111,6 +114,42 @@ One `pnpm install` is run at the end (skip with `-I`).
 
 Note: GitLab uses tarball URLs (e.g. `https://gitlab.com/user/repo/-/archive/ref/repo-ref.tar.gz`) since pnpm doesn't support `gitlab:` prefix.
 
+### Switch to pkg.pr.new (continuous release)
+
+```bash
+pds cr [deps...]                  # Default-branch HEAD, resolved to SHA
+pds cr [deps...] -r v1.0.0        # Resolves ref to SHA
+pds cr [deps...] -R main          # Uses ref as-is (pin to branch/tag name)
+pds cr [deps...] -n               # Dry-run: print the URL(s), no install/HEAD-check
+pds pkg-pr-new [deps...]          # Long alias
+```
+
+[pkg.pr.new] publishes a SHA-pinned preview of every package on each push/PR. For a
+**monorepo fork** it rewrites the inter-package `workspace:*` specs to the sibling
+packages' pkg.pr.new URLs, so installing the set wires them together with no
+`pnpm.overrides` gymnastics — the gap `pds gh` can't fill for a monorepo whose source
+packages have unresolvable `workspace:*` / `catalog:` deps and no build output.
+
+This will (per dep):
+- Set `package.json` dependency to `https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha>`
+- Remove local path from `pnpm-workspace.yaml`
+- Remove from `vite.config.ts` `optimizeDeps.exclude`
+
+The URL is derived from the dep's existing `github` (`<owner>/<repo>`) + `npm` (`<npmName>`,
+scope included) config — no new config field. The SHA defaults to the GitHub
+default-branch HEAD; use `-r`/`-R` to target another ref. After switching, `pds cr` HEADs
+each URL and **warns** (does not fail) if the build isn't published yet (CI may still be
+running); `-n` dry-run skips the check.
+
+This makes it easy to toggle a monorepo fork between a local checkout and a remote build:
+
+```bash
+pds l  @slidev/cli @slidev/client @slidev/parser   # local fork checkout
+pds cr @slidev/cli @slidev/client @slidev/parser   # remote pkg.pr.new build (SHA-pinned)
+```
+
+[pkg.pr.new]: https://pkg.pr.new
+
 ### Switch to NPM
 
 ```bash
@@ -124,12 +163,26 @@ Note: passing a shared `[version]` across multiple deps is not supported (versio
 
 ### Multi-dep behavior
 
-All switch verbs (`l`/`gh`/`gl`/`g`/`n`) and `init` accept multiple deps in one call:
+All switch verbs (`l`/`gh`/`gl`/`g`/`cr`/`n`) and `init` accept multiple deps in one call:
 
 - **One trailing `pnpm install`**: per-dep work runs first, then a single install fires at the end.
 - **Stop on first failure (default)**: if one dep fails, later deps are not processed. Per-dep changes already applied are kept.
 - **`-k`/`--keep-going`**: continue past per-dep failures, log each, and exit non-zero at the end if any failed.
 - **Zero-arg fallback** is unchanged: `pds gh` with no dep query still requires exactly one dep configured (errors otherwise).
+
+#### `-a`/`--all`: match many deps at once
+
+By default each query must resolve to **exactly one** dep (a substring that hits several is rejected as ambiguous). `-a`/`--all` instead treats each query as a **case-insensitive regex** and switches **every** matching dep — ideal for a monorepo fork with many sibling sub-packages:
+
+```bash
+pds cr slidev -a                 # all deps matching /slidev/i → pkg.pr.new
+pds cr -a                        # no query → ALL configured deps
+pds l  '@slidev/' -a             # all @slidev/* → local
+pds cr '@slidev/(cli|parser)$' -a   # regex: just cli + parser (anchored)
+pds cr cli parser -a             # multiple patterns, union (deduped)
+```
+
+Matching is unanchored, so `cli` also matches `@slidev/client` (it contains `cli`); anchor with `$` (e.g. `cli$`) to scope it. A pattern that matches nothing errors.
 
 ### Check status
 
@@ -354,18 +407,19 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 
 ### Command options
 
-- `-a, --all`: Show both project and global dependencies (for `list`)
+- `-a, --all`: For `list`, show both project and global dependencies. For the switch verbs (`l`/`gh`/`gl`/`g`/`cr`/`n`), treat each query as a regex and switch ALL matching deps (no query → all configured deps)
 - `-b, --dist-branch <branch>`: Dist branch name (default: "dist")
 - `-D, --dev`: Add as devDependency (for `init` when adding to package.json)
 - `-f, --force`: Suppress mismatch warnings in `init`
 - `-H, --github <repo>`: GitHub repo (auto-detected from package.json if not specified)
 - `-I, --no-install`: Skip running `pnpm install` after changes
+- `-k, --keep-going`: Continue past per-dep failures (for the switch verbs; default: stop on first error)
 - `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
 - `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
-- `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`npm`)
-- `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab` commands)
+- `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`cr`/`npm`)
+- `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab`/`cr` commands)
 - `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)
-- `-s, --source <source>`: Activate a specific source after `init` (`gh`, `gl`, `npm`, or `g` to auto-detect)
+- `-s, --source <source>`: Activate a specific source after `init` (`gh`, `gl`, `cr`, `npm`, or `g` to auto-detect)
 - `-v, --verbose`: Show available remote versions (for `list`)
 
 ## Global CLI tools

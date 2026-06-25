@@ -31,7 +31,7 @@ export interface DepDisplayInfo {
   name: string
   currentSource: string        // e.g. "workspace:*", "github:user/repo#sha", or "local"
   currentSpecifier?: string    // For global mode: the path or version
-  sourceType: 'local' | 'github' | 'gitlab' | 'npm' | 'unknown'
+  sourceType: 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown'
   isDev?: boolean              // Whether it's a devDependency
   isGlobal?: boolean           // Whether it's a global dependency
   version?: string             // Installed version from node_modules

@@ -16,8 +16,9 @@ import {
   getNpmInfoAsync, baseVersion,
 } from './remote.js'
 
-export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'npm' | 'unknown' {
+export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown' {
   if (source === 'workspace:*' || source === 'local') return 'local'
+  if (source.includes('pkg.pr.new')) return 'cr'
   if (source.startsWith('github:') || source.includes('github.com/')) return 'github'
   if (source.includes('gitlab.com') && source.includes('/-/archive/')) return 'gitlab'
   if (source.match(/^\^?\d|^latest/)) return 'npm'
@@ -44,8 +45,12 @@ export function formatAheadBehind(ahead?: number, behind?: number): string {
   return ''
 }
 
-// Extract the pinned SHA from a GitHub/GitLab source specifier
+// Extract the pinned SHA from a GitHub/GitLab/pkg.pr.new source specifier
 export function extractSourceSha(source: string): string | undefined {
+  // pkg.pr.new: https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha> (npm scope also
+  // contains '@', so match the trailing @<hex> only)
+  const crMatch = source.match(/pkg\.pr\.new\/.+@([0-9a-f]+)$/)
+  if (crMatch) return crMatch[1].slice(0, 7)
   // GitHub: github:user/repo#sha or https://github.com/user/repo#sha
   const ghMatch = source.match(/#([a-f0-9]+)$/)
   if (ghMatch) return ghMatch[1].slice(0, 7)
@@ -144,6 +149,12 @@ export function displayDep(
     }
   }
 
+  // pkg.pr.new derives from github + npm (no dedicated config field), so only
+  // surface it as a line when it's the active source — pinned to its SHA.
+  if (active === 'cr') {
+    const repo = info.config.github ?? '(pkg.pr.new)'
+    line('pkg.pr.new', true, repo, formatActiveSuffix(info))
+  }
   if (info.config.github) {
     showDistLine('GitHub', info.config.github, active === 'github', versions?.github, versions?.githubVersion)
   }

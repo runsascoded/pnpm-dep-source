@@ -212,6 +212,17 @@ export function resolveGitLabRefAsync(repo: string, ref: string): Promise<string
   return promise
 }
 
+// Check whether a pkg.pr.new build URL resolves (CI only publishes after building
+// the SHA). Warn-only: returns false on 404 / network error rather than throwing.
+export async function pkgPrNewBuildExists(url: string): Promise<boolean> {
+  try {
+    const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' })
+    return resp.ok
+  } catch {
+    return false
+  }
+}
+
 // Parse GitHub/GitLab repo from a URL string
 export function parseRepoUrl(repoUrl: string): { github?: string; gitlab?: string } {
   const result: { github?: string; gitlab?: string } = {}
@@ -493,7 +504,11 @@ export function parseGlobalPkgSource(
 
   // Check resolved URL and install path for source detection
   const resolvedOrPath = resolved || pkgPath
-  if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
+  if (resolvedOrPath.includes('pkg.pr.new')) {
+    const shaMatch = resolvedOrPath.match(/@([0-9a-f]+)(?:\.tgz)?$/)
+    const sha = shaMatch ? shaMatch[1].slice(0, 7) : ''
+    return { source: 'cr', specifier: `${sha}; ${version}` }
+  } else if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
     const shaMatch = resolvedOrPath.match(/([a-f0-9]{40})/)
     const sha = shaMatch ? shaMatch[1].slice(0, 7) : ''
     return { source: 'github', specifier: `${sha}; ${version}` }

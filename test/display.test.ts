@@ -6,6 +6,7 @@ import {
   getActiveParts, formatActiveSuffix, displayDep,
 } from '../src/display.js'
 import { parseDistSourceSha, baseVersion } from '../src/remote.js'
+import { makePkgPrNewSpecifier } from '../src/switch.js'
 
 // In non-TTY (test) mode, all ANSI codes are empty strings,
 // so output is plain text — no stripping needed.
@@ -35,8 +36,24 @@ describe('getSourceType', () => {
   it('returns npm for latest', () => {
     expect(getSourceType('latest')).toBe('npm')
   })
+  it('returns cr for pkg.pr.new URL', () => {
+    expect(getSourceType('https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1')).toBe('cr')
+  })
   it('returns unknown for unrecognized', () => {
     expect(getSourceType('(not found)')).toBe('unknown')
+  })
+})
+
+describe('makePkgPrNewSpecifier', () => {
+  it('builds URL from owner/repo, scoped npm name, and sha', () => {
+    expect(makePkgPrNewSpecifier('Open-Athena/slidev', '@slidev/cli', 'abcdef1234567')).toBe(
+      'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567'
+    )
+  })
+  it('builds URL for an unscoped npm name', () => {
+    expect(makePkgPrNewSpecifier('user/repo', 'mypkg', 'deadbeef')).toBe(
+      'https://pkg.pr.new/user/repo/mypkg@deadbeef'
+    )
   })
 })
 
@@ -64,6 +81,12 @@ describe('extractSourceSha', () => {
   })
   it('extracts sha from gitlab archive URL', () => {
     expect(extractSourceSha('https://gitlab.com/user/repo/-/archive/abcdef1234567/repo-abcdef1234567.tar.gz')).toBe('abcdef1')
+  })
+  it('extracts sha from pkg.pr.new URL with scoped name', () => {
+    expect(extractSourceSha('https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567')).toBe('abcdef1')
+  })
+  it('extracts sha from pkg.pr.new URL with unscoped name', () => {
+    expect(extractSourceSha('https://pkg.pr.new/user/repo/mypkg@abcdef1234567')).toBe('abcdef1')
   })
   it('returns undefined for npm source', () => {
     expect(extractSourceSha('^1.0.0')).toBeUndefined()
@@ -156,6 +179,14 @@ describe('getActiveParts', () => {
     })
     expect(getActiveParts(info)).toEqual(['https://github.com/user/repo#abc1234'])
   })
+  it('extracts sha from pkg.pr.new source', () => {
+    const info = mkInfo({
+      sourceType: 'cr',
+      currentSource: 'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567',
+      version: '0.50.0',
+    })
+    expect(getActiveParts(info)).toEqual(['abcdef1', '0.50.0'])
+  })
 })
 
 describe('formatActiveSuffix', () => {
@@ -198,6 +229,24 @@ describe('displayDep', () => {
       'test-dep:',
       '* Local: ../my-dep (abc1234)',
       '  GitHub: user/repo',
+    ])
+  })
+
+  it('shows pkg.pr.new active dep, with github/npm as inactive alternatives', () => {
+    const info = mkInfo({
+      sourceType: 'cr',
+      currentSource: 'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567',
+      version: '0.50.0',
+      config: { localPath: '../slidev', github: 'Open-Athena/slidev', npm: '@slidev/cli' },
+      gitInfo: { sha: 'abc1234', dirty: false },
+    })
+    displayDep(info)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../slidev (abc1234)',
+      '* pkg.pr.new: Open-Athena/slidev (abcdef1; 0.50.0)',
+      '  GitHub: Open-Athena/slidev',
+      '  NPM: @slidev/cli',
     ])
   })
 

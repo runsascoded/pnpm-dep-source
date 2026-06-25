@@ -807,6 +807,123 @@ export default defineConfig({
     })
   })
 
+  describe('pkg.pr.new (cr) mode', () => {
+    const crUrl = 'https://pkg.pr.new/test-org/mock-dep/@test/mock-dep@main'
+
+    it('dry-run prints the derived URL without mutating', () => {
+      const pkgBefore = readJson(join(TEST_DIR, 'package.json'))
+      const output = run('cr mock-dep -R main -n')
+      expect(output.trim()).toBe(`Would switch @test/mock-dep to: ${crUrl}`)
+      // No mutation in dry-run
+      const pkgAfter = readJson(join(TEST_DIR, 'package.json'))
+      expect(pkgAfter).toEqual(pkgBefore)
+    })
+
+    it('activates via init -s cr (SHA-pinned URL, no workspace/vite entries)', () => {
+      run(`init ${MOCK_DEP_DIR} -H test-org/mock-dep -n @test/mock-dep -s cr -R main -I`)
+
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(crUrl)
+      // Not local mode: no workspace yaml, no vite optimizeDeps entry
+      expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+      const vite = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
+      expect(vite).not.toContain("'@test/mock-dep'")
+    })
+
+    it('reports cr source with pinned SHA in status', () => {
+      // Point the dep at a pkg.pr.new URL directly
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      const pinnedUrl = 'https://pkg.pr.new/test-org/mock-dep/@test/mock-dep@abcdef1234567'
+      ;(pkg.dependencies as Record<string, string>)['@test/mock-dep'] = pinnedUrl
+      writeJson(pkgPath, pkg)
+
+      const output = run('status mock-dep')
+      expect(output.trim()).toBe(`@test/mock-dep: cr (${pinnedUrl})`)
+    })
+
+    it('lists cr deps with -s cr filter', () => {
+      const pkgPath = join(TEST_DIR, 'package.json')
+      const pkg = readJson(pkgPath)
+      ;(pkg.dependencies as Record<string, string>)['@test/mock-dep'] =
+        'https://pkg.pr.new/test-org/mock-dep/@test/mock-dep@abcdef1234567'
+      writeJson(pkgPath, pkg)
+
+      expect(run('ls -s cr')).toContain('@test/mock-dep')
+      expect(run('ls -s gh')).not.toContain('@test/mock-dep')
+    })
+
+    it('errors when no npm package name is configured', () => {
+      // Remove npm from config
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      delete (config.dependencies as Record<string, Record<string, unknown>>)['@test/mock-dep'].npm
+      writeJson(configPath, config)
+
+      expect(() => run('cr mock-dep -R main -n')).toThrow(/No npm package name configured/)
+    })
+  })
+
+  describe('multi-match (-a/--all)', () => {
+    // Parse the dep names from `gh -n` dry-run output (network-free via -R)
+    function switchedDeps(output: string): string[] {
+      return output
+        .split('\n')
+        .map(l => l.match(/^Would switch (\S+) to:/)?.[1])
+        .filter((x): x is string => !!x)
+        .sort()
+    }
+    function addGhDep(name: string, github: string): void {
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)[name] = { github, npm: name }
+      writeJson(configPath, config)
+    }
+
+    it('expands a substring query to all matching deps', () => {
+      addGhDep('@test/multi-a', 'org/multi-a')
+      addGhDep('@test/multi-b', 'org/multi-b')
+
+      const out = run('github multi -a -R main -n')
+      expect(switchedDeps(out)).toEqual(['@test/multi-a', '@test/multi-b'])
+    })
+
+    it('selects all configured deps when no query is given', () => {
+      addGhDep('@test/multi-a', 'org/multi-a')
+
+      const out = run('github -a -R main -n')
+      expect(switchedDeps(out)).toEqual(['@test/mock-dep', '@test/multi-a'])
+    })
+
+    it('supports anchored regex to disambiguate overlapping names', () => {
+      addGhDep('@test/multi-a', 'org/multi-a')
+      addGhDep('@test/multi-ab', 'org/multi-ab')
+
+      const out = run("github 'multi-a$' -a -R main -n")
+      expect(switchedDeps(out)).toEqual(['@test/multi-a'])
+    })
+
+    it('dedups deps matched by more than one pattern', () => {
+      addGhDep('@test/multi-a', 'org/multi-a')
+      addGhDep('@test/multi-b', 'org/multi-b')
+
+      // 'multi-a' matches only multi-a; 'multi' matches both — union, deduped
+      const out = run('github multi-a multi -a -R main -n')
+      expect(switchedDeps(out)).toEqual(['@test/multi-a', '@test/multi-b'])
+    })
+
+    it('errors when a pattern matches nothing', () => {
+      expect(() => run('github nonexistent -a -R main -n')).toThrow(/No dependency matching/)
+    })
+
+    it('without -a, a multi-match query stays ambiguous', () => {
+      addGhDep('@test/multi-a', 'org/multi-a')
+      addGhDep('@test/multi-b', 'org/multi-b')
+
+      expect(() => run('github multi -R main -n')).toThrow(/Ambiguous match/)
+    })
+  })
+
   describe('deinit command', () => {
     it('removes dependency from config', () => {
       const configPath = join(TEST_DIR, '.pnpm-dep-source.json')

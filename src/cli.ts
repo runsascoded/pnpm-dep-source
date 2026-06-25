@@ -8,7 +8,7 @@ import { dirname, join, relative, resolve } from 'path'
 import type { Config, DepConfig, DepDisplayInfo, HooksConfig, RemoteVersions } from './types.js'
 import { VERSION, resolveConfigPath, GLOBAL_CONFIG_DIR, GLOBAL_HOOKS_DIR, HOOKS_CONFIG_FILE, c } from './constants.js'
 import { findProjectRoot, findWorkspaceRoot, workspaceLocalPath } from './project.js'
-import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchingDep, loadHooksConfig, saveHooksConfig } from './config.js'
+import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchingDep, findAllMatchingDeps, loadHooksConfig, saveHooksConfig } from './config.js'
 import {
   loadPackageJson, savePackageJson, removePnpmOverride,
   updatePackageJsonDep, hasDependency, addDependency, removeDependency,
@@ -20,12 +20,13 @@ import {
   getLatestNpmVersion, npmPackageExists,
   getLocalPackageInfo, getRemotePackageInfo, isRepoUrl,
   getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync,
+  pkgPrNewBuildExists,
 } from './remote.js'
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
 import { setLogLevel, setRetries } from './log.js'
 import {
-  updateViteConfig, makeGitHubSpecifier,
-  switchToLocal, switchToGitHub, switchToGitLab,
+  updateViteConfig, makeGitHubSpecifier, makePkgPrNewSpecifier,
+  switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew,
   cleanupDepReferences, runPnpmInstall, runGlobalInstall,
 } from './switch.js'
 
@@ -54,9 +55,57 @@ function runMultiple<T>(
   }
 }
 
+// Resolve dep queries into the concrete [name, config] pairs to operate on.
+// Default: each query resolves to exactly one dep (errors if zero/ambiguous).
+// With `all`: each query is a regex matching ALL deps (union, deduped, config
+// order); a bare invocation (no query) selects every configured dep.
+function resolveDepItems(
+  config: Config,
+  queries: (string | undefined)[],
+  all?: boolean,
+): [string, DepConfig][] {
+  if (!all) {
+    return queries.map(q => findMatchingDep(config, q))
+  }
+  const patterns = queries.filter((q): q is string => q !== undefined)
+  if (patterns.length === 0) {
+    const entries = Object.entries(config.dependencies)
+    if (entries.length === 0) {
+      throw new Error('No dependencies configured. Use "pds init <path>" to add one.')
+    }
+    return entries
+  }
+  const seen = new Set<string>()
+  const out: [string, DepConfig][] = []
+  for (const pattern of patterns) {
+    for (const [name, dep] of findAllMatchingDeps(config, pattern)) {
+      if (!seen.has(name)) {
+        seen.add(name)
+        out.push([name, dep])
+      }
+    }
+  }
+  return out
+}
+
+// Warn-only build-existence check for pkg.pr.new: a build URL only resolves once
+// CI has published that SHA. HEAD each (concurrently) and warn on 404. Skipped on
+// dry-run (nothing was switched).
+async function warnMissingBuilds(
+  built: { depName: string; url: string }[],
+  dryRun?: boolean,
+): Promise<void> {
+  if (dryRun || built.length === 0) return
+  await Promise.all(built.map(async ({ depName, url }) => {
+    if (!(await pkgPrNewBuildExists(url))) {
+      console.error(`${c.yellow}Warning: no published pkg.pr.new build for ${depName} at ${url} yet; CI may still be running${c.reset}`)
+    }
+  }))
+}
+
 program
   .name('pnpm-dep-source')
-  .description('Switch pnpm dependencies between local, GitHub, and NPM sources')
+  .description('Switch pnpm dependencies between local, GitHub, GitLab, pkg.pr.new, and NPM sources')
   .version(VERSION)
   .option('-C, --dir <path>', 'Run as if started in <path> (like git -C)')
   .option('-g, --global', 'Use global config (~/.config/pnpm-dep-source/) for CLI tools')
@@ -97,7 +146,7 @@ function initOne(
   const isUrl = isRepoUrl(pathOrUrl)
   let pkgInfo: ReturnType<typeof getLocalPackageInfo>
   let localPath: string | undefined
-  let activateSource: 'local' | 'github' | 'gitlab' | 'npm' | undefined
+  let activateSource: 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | undefined
 
   if (isUrl) {
     pkgInfo = getRemotePackageInfo(pathOrUrl)
@@ -123,8 +172,9 @@ function initOne(
     else if (s === 'github' || s === 'gh') activateSource = 'github'
     else if (s === 'gitlab' || s === 'gl') activateSource = 'gitlab'
     else if (s === 'git' || s === 'g') sourceFlag = 'git'
+    else if (s === 'cr' || s === 'pkg-pr-new') activateSource = 'cr'
     else if (s === 'npm' || s === 'n') activateSource = 'npm'
-    else throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, npm`)
+    else throw new Error(`Unknown --source value: '${options.source}'. Use: local, github/gh, git/g, gitlab/gl, cr/pkg-pr-new, npm`)
   }
 
   const pkgName = pkgInfo.name
@@ -242,6 +292,12 @@ function initOne(
     if (!gitlab) throw new Error(`No GitLab repo configured for ${pkgName}. Use -L/--gitlab to specify one.`)
     switchToGitLab(projectRoot!, pkgName, depConfig, options.rawRef, workspaceRoot)
     return true
+  } else if (activateSource === 'cr') {
+    if (!github) throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`)
+    if (!npmName) throw new Error(`No npm package name configured for ${pkgName}. Use -n/--npm to specify one.`)
+    const sha = options.rawRef ?? resolveGitHubRef(github, 'HEAD')
+    switchToPkgPrNew(projectRoot!, pkgName, depConfig, sha, workspaceRoot)
+    return true
   } else if (activateSource === 'npm' || (needsAdd && !activateSource && (depConfig.npm || npmPackageExists(pkgName)))) {
     const npmPkgName = depConfig.npm ?? pkgName
     const latestVersion = getLatestNpmVersion(npmPkgName)
@@ -267,7 +323,7 @@ program
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
   .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
-  .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, npm (default: local for path, inferred for URL)')
+  .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, cr/pkg-pr-new, npm (default: local for path, inferred for URL)')
   .action((pathsOrUrls: string[], options: InitOptions & { keepGoing?: boolean }, cmd: { help: () => void }) => {
     if (pathsOrUrls.length === 0) {
       cmd.help()
@@ -441,7 +497,7 @@ program
   .alias('ls')
   .description('List configured dependencies and their current sources')
   .option('-a, --all', 'Show both project and global dependencies')
-  .option('-s, --source <type>', 'Filter by active source type (local, github/gh, gitlab/gl, npm)')
+  .option('-s, --source <type>', 'Filter by active source type (local, github/gh, gitlab/gl, cr/pkg-pr-new, npm)')
   .option('-v, --verbose', 'Show available remote versions')
   .action(async (filters: string[], options: { all?: boolean; source?: string; verbose?: boolean }) => {
     await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined, options.source)
@@ -459,6 +515,7 @@ function normalizeSourceFilter(s: string): DepDisplayInfo['sourceType'] | undefi
   if (lower === 'local' || lower === 'l') return 'local'
   if (lower === 'github' || lower === 'gh') return 'github'
   if (lower === 'gitlab' || lower === 'gl') return 'gitlab'
+  if (lower === 'cr' || lower === 'pkg-pr-new') return 'cr'
   if (lower === 'npm' || lower === 'n') return 'npm'
   return undefined
 }
@@ -467,7 +524,7 @@ function normalizeSourceFilter(s: string): DepDisplayInfo['sourceType'] | undefi
 async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[], sourceFilter?: string): Promise<void> {
   const sourceType = sourceFilter ? normalizeSourceFilter(sourceFilter) : undefined
   if (sourceFilter && !sourceType) {
-    console.error(`Unknown source type: ${sourceFilter}. Use: local, github/gh, gitlab/gl, npm`)
+    console.error(`Unknown source type: ${sourceFilter}. Use: local, github/gh, gitlab/gl, cr/pkg-pr-new, npm`)
     process.exit(1)
   }
   const isGlobal = program.opts().global
@@ -596,14 +653,15 @@ program
   .description('Switch dependencies to local directory')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
-  .action((deps: string[], options: { install: boolean; keepGoing?: boolean }) => {
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action((deps: string[], options: { install: boolean; keepGoing?: boolean; all?: boolean }) => {
     const queries: (string | undefined)[] = deps.length ? deps : [undefined]
     const isGlobal = program.opts().global
 
     if (isGlobal) {
       const config = loadGlobalConfig()
-      runMultiple(queries, !!options.keepGoing, depQuery => {
-        const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         if (!depConfig.localPath) {
           throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
         }
@@ -617,8 +675,8 @@ program
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     const config = loadConfig(projectRoot)
 
-    runMultiple(queries, !!options.keepGoing, depQuery => {
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
       if (!depConfig.localPath) {
         throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
       }
@@ -639,7 +697,8 @@ program
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
-  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean; all?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
@@ -654,8 +713,8 @@ program
     }
 
     if (isGlobal) {
-      runMultiple(queries, !!options.keepGoing, depQuery => {
-        const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         if (!depConfig.github) {
           throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`)
         }
@@ -676,8 +735,8 @@ program
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     let anyMutation = false
 
-    runMultiple(queries, !!options.keepGoing, depQuery => {
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
       if (!depConfig.github) {
         throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`)
       }
@@ -706,7 +765,8 @@ program
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
-  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean; all?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
@@ -725,8 +785,8 @@ program
     }
 
     if (isGlobal) {
-      runMultiple(queries, !!options.keepGoing, depQuery => {
-        const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         if (!depConfig.gitlab) {
           throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`)
         }
@@ -747,8 +807,8 @@ program
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     let anyMutation = false
 
-    runMultiple(queries, !!options.keepGoing, depQuery => {
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
       if (!depConfig.gitlab) {
         throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`)
       }
@@ -777,7 +837,8 @@ program
   .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
-  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean }) => {
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action((deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean; all?: boolean }) => {
     if (options.ref && options.rawRef) {
       throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
     }
@@ -786,8 +847,8 @@ program
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
 
     if (isGlobal) {
-      runMultiple(queries, !!options.keepGoing, depQuery => {
-        const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         const hasGitHub = !!depConfig.github
         const hasGitLab = !!depConfig.gitlab
         if (!hasGitHub && !hasGitLab) {
@@ -827,8 +888,8 @@ program
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     let anyMutation = false
 
-    runMultiple(queries, !!options.keepGoing, depQuery => {
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
       const hasGitHub = !!depConfig.github
       const hasGitLab = !!depConfig.gitlab
       if (!hasGitHub && !hasGitLab) {
@@ -868,13 +929,94 @@ program
   })
 
 program
+  .command('cr [deps...]')
+  .alias('pkg-pr-new')
+  .description('Switch dependencies to pkg.pr.new continuous-release build (SHA-pinned, defaults to default-branch HEAD)')
+  .option('-n, --dry-run', 'Show what would be installed without making changes')
+  .option('-r, --ref <ref>', 'Git ref, resolved to SHA')
+  .option('-R, --raw-ref <ref>', 'Git ref, used as-is (pin to branch/tag name)')
+  .option('-I, --no-install', 'Skip running pnpm install')
+  .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action(async (deps: string[], options: { dryRun?: boolean; ref?: string; rawRef?: string; install: boolean; keepGoing?: boolean; all?: boolean }) => {
+    if (options.ref && options.rawRef) {
+      throw new Error('Cannot use both -r/--ref and -R/--raw-ref')
+    }
+    const queries: (string | undefined)[] = deps.length ? deps : [undefined]
+    const isGlobal = program.opts().global
+    const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+
+    // Default ref: the repo's default-branch HEAD (pkg.pr.new keys builds off
+    // main/PR commits; no dist branch). `commits/HEAD` resolves the default
+    // branch regardless of its name.
+    const resolveSha = (github: string): string => {
+      if (options.rawRef) return options.rawRef
+      return resolveGitHubRef(github, options.ref ?? 'HEAD')
+    }
+    const requireFields = (depName: string, depConfig: DepConfig): { github: string; npm: string } => {
+      if (!depConfig.github) {
+        throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`)
+      }
+      if (!depConfig.npm) {
+        throw new Error(`No npm package name configured for ${depName}. Use "pds set ${depName} -n <name>"`)
+      }
+      return { github: depConfig.github, npm: depConfig.npm }
+    }
+
+    // Collected (depName, url) for the post-switch warn-only build-existence check
+    const built: { depName: string; url: string }[] = []
+
+    if (isGlobal) {
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
+        const { github, npm } = requireFields(depName, depConfig)
+        const sha = resolveSha(github)
+        const specifier = makePkgPrNewSpecifier(github, npm, sha)
+        if (options.dryRun) {
+          console.log(`Would switch ${depName} to: ${specifier}`)
+          return
+        }
+        runGlobalInstall(specifier)
+        console.log(`Installed ${depName} globally from pkg.pr.new: ${specifier}`)
+        built.push({ depName, url: specifier })
+      })
+      await warnMissingBuilds(built, options.dryRun)
+      return
+    }
+
+    const projectRoot = findProjectRoot()
+    const workspaceRoot = findWorkspaceRoot(projectRoot)
+    let anyMutation = false
+
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
+      const { github, npm } = requireFields(depName, depConfig)
+      const sha = resolveSha(github)
+      if (options.dryRun) {
+        console.log(`Would switch ${depName} to: ${makePkgPrNewSpecifier(github, npm, sha)}`)
+        return
+      }
+      switchToPkgPrNew(projectRoot, depName, depConfig, sha, workspaceRoot)
+      built.push({ depName, url: makePkgPrNewSpecifier(github, npm, sha) })
+      anyMutation = true
+    })
+
+    await warnMissingBuilds(built, options.dryRun)
+
+    if (anyMutation && options.install) {
+      runPnpmInstall(projectRoot, workspaceRoot)
+    }
+  })
+
+program
   .command('npm [args...]')
   .alias('n')
   .description('Switch dependencies to NPM (defaults to latest). With 1-2 args, last may be a version (must start with digit).')
   .option('-n, --dry-run', 'Show what would be installed without making changes')
   .option('-I, --no-install', 'Skip running pnpm install')
   .option('-k, --keep-going', 'Continue past per-dep failures (default: stop on first error)')
-  .action((args: string[], options: { dryRun?: boolean; install: boolean; keepGoing?: boolean }) => {
+  .option('-a, --all', 'Treat each query as a regex and switch ALL matching deps (no query = all configured deps)')
+  .action((args: string[], options: { dryRun?: boolean; install: boolean; keepGoing?: boolean; all?: boolean }) => {
     const isGlobal = program.opts().global
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
     const deps = Object.entries(config.dependencies)
@@ -887,7 +1029,11 @@ program
     //   [arg1, ...]                        → all args as queries, no version
     let queries: (string | undefined)[]
     let version: string | undefined
-    if (args.length === 0) {
+    if (options.all) {
+      // With --all, every arg is a regex pattern; a shared trailing version
+      // makes no sense across many deps, so don't special-case it.
+      queries = args.length ? args : [undefined]
+    } else if (args.length === 0) {
       queries = [undefined]
     } else if (args.length === 1) {
       if (deps.length === 1 && /^\d/.test(args[0])) {
@@ -904,8 +1050,8 @@ program
     }
 
     if (isGlobal) {
-      runMultiple(queries, !!options.keepGoing, depQuery => {
-        const [depName, depConfig] = findMatchingDep(config, depQuery)
+      const items = resolveDepItems(config, queries, options.all)
+      runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         const npmName = depConfig.npm ?? depName
         const resolvedVersion = version ?? getLatestNpmVersion(npmName)
         const specifier = `^${resolvedVersion}`
@@ -923,8 +1069,8 @@ program
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     let anyMutation = false
 
-    runMultiple(queries, !!options.keepGoing, depQuery => {
-      const [depName, depConfig] = findMatchingDep(config, depQuery)
+    const items = resolveDepItems(config, queries, options.all)
+    runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
       const npmName = depConfig.npm ?? depName
       const resolvedVersion = version ?? getLatestNpmVersion(npmName)
       const specifier = `^${resolvedVersion}`
@@ -1356,6 +1502,7 @@ alias pdgv='pds -g ls -v' # global list with versions
 alias pdsl='pds l'     # local
 alias pdgh='pds gh'    # github
 alias pdgl='pds gl'    # gitlab
+alias pdcr='pds cr'    # pkg.pr.new continuous release
 alias pdsn='pds n'     # npm
 alias pdsv='pds v'     # versions
 alias pdss='pds s'     # status

@@ -143,6 +143,14 @@ export function makeGitHubSpecifier(repo: string, ref: string, subdir?: string):
   return `https://github.com/${repo}#${ref}`
 }
 
+// Generate a pkg.pr.new continuous-release URL: a raw HTTPS tarball-style
+// specifier pnpm installs directly (mechanically like the GitLab tarball URL).
+// Format: https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha>
+// `repo` is the GitHub "owner/repo"; `npm` is the package name (scope included).
+export function makePkgPrNewSpecifier(repo: string, npm: string, sha: string): string {
+  return `https://pkg.pr.new/${repo}/${npm}@${sha}`
+}
+
 // Helper to switch a dependency to local mode
 export function switchToLocal(
   projectRoot: string,
@@ -260,6 +268,34 @@ export function switchToGitLab(
   updateViteConfig(projectRoot, depName, false)
 
   console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+}
+
+// Helper to switch a dependency to pkg.pr.new mode (SHA-pinned continuous release)
+export function switchToPkgPrNew(
+  projectRoot: string,
+  depName: string,
+  depConfig: DepConfig,
+  resolvedSha: string,
+  workspaceRoot?: string | null,
+): void {
+  if (!depConfig.github) {
+    throw new Error(`No GitHub repo configured for ${depName}`)
+  }
+  if (!depConfig.npm) {
+    throw new Error(`No npm package name configured for ${depName}`)
+  }
+
+  const specifier = makePkgPrNewSpecifier(depConfig.github, depConfig.npm, resolvedSha)
+
+  const pkg = loadPackageJson(projectRoot)
+  updatePackageJsonDep(pkg, depName, specifier)
+  removePnpmOverride(pkg, depName)
+  savePackageJson(projectRoot, pkg)
+
+  // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude (same as gh/gl)
+  cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot)
+
+  console.log(`Switched ${depName} to pkg.pr.new: ${specifier}`)
 }
 
 // Helper to clean up workspace/vite when removing a dep
