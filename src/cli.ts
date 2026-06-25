@@ -7,13 +7,12 @@ import { dirname, join, relative, resolve } from 'path'
 
 import type { Config, DepConfig, DepDisplayInfo, HooksConfig, RemoteVersions } from './types.js'
 import { VERSION, resolveConfigPath, GLOBAL_CONFIG_DIR, GLOBAL_HOOKS_DIR, HOOKS_CONFIG_FILE, c } from './constants.js'
-import { findProjectRoot, findWorkspaceRoot, workspaceLocalPath } from './project.js'
+import { findProjectRoot, findWorkspaceRoot } from './project.js'
 import { loadConfig, saveConfig, loadGlobalConfig, saveGlobalConfig, findMatchingDep, findAllMatchingDeps, loadHooksConfig, saveHooksConfig } from './config.js'
 import {
-  loadPackageJson, savePackageJson, removePnpmOverride,
+  loadPackageJson, savePackageJson,
   updatePackageJsonDep, hasDependency, addDependency, removeDependency,
   getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion,
-  loadWorkspaceYaml, saveWorkspaceYaml,
 } from './pkg.js'
 import {
   resolveGitHubRef, resolveGitLabRef,
@@ -25,8 +24,8 @@ import {
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
 import { setLogLevel, setRetries } from './log.js'
 import {
-  updateViteConfig, makeGitHubSpecifier, makePkgPrNewSpecifier,
-  switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew,
+  makeGitHubSpecifier, makePkgPrNewSpecifier,
+  switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew, switchToNpm,
   cleanupDepReferences, runPnpmInstall, runGlobalInstall,
 } from './switch.js'
 
@@ -1079,31 +1078,7 @@ program
         return
       }
 
-      const pkg = loadPackageJson(projectRoot)
-      updatePackageJsonDep(pkg, depName, specifier)
-      removePnpmOverride(pkg, depName)
-      savePackageJson(projectRoot, pkg)
-
-      // Remove from pnpm-workspace.yaml
-      if (depConfig.localPath) {
-        const wsRoot = workspaceRoot ?? projectRoot
-        const ws = loadWorkspaceYaml(wsRoot)
-        if (ws?.packages) {
-          const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-          ws.packages = ws.packages.filter(p => p !== wsPath)
-          if (workspaceRoot) {
-            saveWorkspaceYaml(wsRoot, ws)
-          } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-            saveWorkspaceYaml(wsRoot, null)
-          } else {
-            saveWorkspaceYaml(wsRoot, ws)
-          }
-        }
-      }
-
-      updateViteConfig(projectRoot, depName, false)
-
-      console.log(`Switched ${depName} to NPM: ${specifier}`)
+      switchToNpm(projectRoot, depName, depConfig, specifier, workspaceRoot)
       anyMutation = true
     })
 

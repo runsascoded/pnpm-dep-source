@@ -5,7 +5,7 @@ import type { DepConfig } from './types.js'
 import { c } from './constants.js'
 import {
   loadPackageJson, savePackageJson,
-  updatePackageJsonDep, removePnpmOverride,
+  updatePackageJsonDep, removePnpmOverride, hasDependency,
   loadWorkspaceYaml, saveWorkspaceYaml,
 } from './pkg.js'
 import { resolveGitHubRef, resolveGitLabRef } from './remote.js'
@@ -151,6 +151,23 @@ export function makePkgPrNewSpecifier(repo: string, npm: string, sha: string): s
   return `https://pkg.pr.new/${repo}/${npm}@${sha}`
 }
 
+// pds can track transitive deps of a monorepo fork (e.g. `@slidev/client` when
+// only `@slidev/cli` is a direct dep). Those have no package.json entry to
+// rewrite, but still need their workspace/override references managed. Apply the
+// specifier when the dep is a direct dependency; always strip any pnpm override.
+// Returns whether it was a direct dependency.
+function applyPackageJsonSpecifier(projectRoot: string, depName: string, specifier: string): boolean {
+  const pkg = loadPackageJson(projectRoot)
+  const inPkg = hasDependency(pkg, depName)
+  if (inPkg) updatePackageJsonDep(pkg, depName, specifier)
+  removePnpmOverride(pkg, depName)
+  savePackageJson(projectRoot, pkg)
+  return inPkg
+}
+
+const transitiveNote = (inPkg: boolean): string =>
+  inPkg ? '' : ' (transitive; package.json unchanged)'
+
 // Helper to switch a dependency to local mode
 export function switchToLocal(
   projectRoot: string,
@@ -159,8 +176,11 @@ export function switchToLocal(
   workspaceRoot?: string | null,
 ): void {
   const pkg = loadPackageJson(projectRoot)
-  updatePackageJsonDep(pkg, depName, 'workspace:*')
-  savePackageJson(projectRoot, pkg)
+  const inPkg = hasDependency(pkg, depName)
+  if (inPkg) {
+    updatePackageJsonDep(pkg, depName, 'workspace:*')
+    savePackageJson(projectRoot, pkg)
+  }
 
   // Update pnpm-workspace.yaml
   const wsRoot = workspaceRoot ?? projectRoot
@@ -176,7 +196,7 @@ export function switchToLocal(
   // Update vite.config.ts
   updateViteConfig(projectRoot, depName, true)
 
-  console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`)
+  console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}${transitiveNote(inPkg)}`)
 }
 
 // Helper to switch a dependency to GitHub mode
@@ -195,32 +215,12 @@ export function switchToGitHub(
   const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch)
   const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir)
 
-  const pkg = loadPackageJson(projectRoot)
-  updatePackageJsonDep(pkg, depName, specifier)
-  removePnpmOverride(pkg, depName)
-  savePackageJson(projectRoot, pkg)
+  const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier)
 
-  // Remove from pnpm-workspace.yaml
-  if (depConfig.localPath) {
-    const wsRoot = workspaceRoot ?? projectRoot
-    const ws = loadWorkspaceYaml(wsRoot)
-    if (ws?.packages) {
-      const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-      ws.packages = ws.packages.filter(p => p !== wsPath)
-      if (workspaceRoot) {
-        saveWorkspaceYaml(wsRoot, ws)
-      } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(wsRoot, null)
-      } else {
-        saveWorkspaceYaml(wsRoot, ws)
-      }
-    }
-  }
+  // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+  cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot)
 
-  // Remove from vite.config.ts optimizeDeps.exclude
-  updateViteConfig(projectRoot, depName, false)
-
-  console.log(`Switched ${depName} to GitHub: ${specifier}`)
+  console.log(`Switched ${depName} to GitHub: ${specifier}${transitiveNote(inPkg)}`)
 }
 
 // Helper to switch a dependency to GitLab mode
@@ -242,32 +242,12 @@ export function switchToGitLab(
   const repoBasename = depConfig.gitlab.split('/').pop()
   const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`
 
-  const pkg = loadPackageJson(projectRoot)
-  updatePackageJsonDep(pkg, depName, tarballUrl)
-  removePnpmOverride(pkg, depName)
-  savePackageJson(projectRoot, pkg)
+  const inPkg = applyPackageJsonSpecifier(projectRoot, depName, tarballUrl)
 
-  // Remove from pnpm-workspace.yaml
-  if (depConfig.localPath) {
-    const wsRoot = workspaceRoot ?? projectRoot
-    const ws = loadWorkspaceYaml(wsRoot)
-    if (ws?.packages) {
-      const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot)
-      ws.packages = ws.packages.filter(p => p !== wsPath)
-      if (workspaceRoot) {
-        saveWorkspaceYaml(wsRoot, ws)
-      } else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-        saveWorkspaceYaml(wsRoot, null)
-      } else {
-        saveWorkspaceYaml(wsRoot, ws)
-      }
-    }
-  }
+  // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+  cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot)
 
-  // Remove from vite.config.ts optimizeDeps.exclude
-  updateViteConfig(projectRoot, depName, false)
-
-  console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`)
+  console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}${transitiveNote(inPkg)}`)
 }
 
 // Helper to switch a dependency to pkg.pr.new mode (SHA-pinned continuous release)
@@ -287,15 +267,28 @@ export function switchToPkgPrNew(
 
   const specifier = makePkgPrNewSpecifier(depConfig.github, depConfig.npm, resolvedSha)
 
-  const pkg = loadPackageJson(projectRoot)
-  updatePackageJsonDep(pkg, depName, specifier)
-  removePnpmOverride(pkg, depName)
-  savePackageJson(projectRoot, pkg)
+  const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier)
 
   // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude (same as gh/gl)
   cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot)
 
-  console.log(`Switched ${depName} to pkg.pr.new: ${specifier}`)
+  console.log(`Switched ${depName} to pkg.pr.new: ${specifier}${transitiveNote(inPkg)}`)
+}
+
+// Helper to switch a dependency to NPM mode
+export function switchToNpm(
+  projectRoot: string,
+  depName: string,
+  depConfig: DepConfig,
+  specifier: string,
+  workspaceRoot?: string | null,
+): void {
+  const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier)
+
+  // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+  cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot)
+
+  console.log(`Switched ${depName} to NPM: ${specifier}${transitiveNote(inPkg)}`)
 }
 
 // Helper to clean up workspace/vite when removing a dep

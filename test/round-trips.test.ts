@@ -864,6 +864,65 @@ export default defineConfig({
     })
   })
 
+  describe('transitive deps (tracked but not in package.json)', () => {
+    // Package entries pds wrote into pnpm-workspace.yaml (verbatim `- <path>` lines)
+    function workspacePackages(): string[] {
+      const wsPath = join(TEST_DIR, 'pnpm-workspace.yaml')
+      if (!existsSync(wsPath)) return []
+      return readFileSync(wsPath, 'utf-8')
+        .split('\n')
+        .map(l => l.match(/^\s+-\s+(.*)$/)?.[1])
+        .filter((x): x is string => !!x)
+    }
+
+    it('switches a transitive dep via workspace cleanup without touching package.json', () => {
+      // @test/transitive is tracked in config but NOT a direct dep in package.json
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/transitive'] = {
+        localPath: '../transitive', github: 'org/transitive', npm: '@test/transitive',
+      }
+      writeJson(configPath, config)
+      // Seed workspace as `pds l` would (plus an unrelated entry to keep)
+      writeFileSync(join(TEST_DIR, 'pnpm-workspace.yaml'), 'packages:\n  - ../transitive\n  - ../keepme\n')
+
+      const out = run('github transitive -R main -I')
+
+      expect(out.trim()).toBe(
+        'Switched @test/transitive to GitHub: https://github.com/org/transitive#main (transitive; package.json unchanged)'
+      )
+      // package.json gains no @test/transitive entry
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/transitive']).toBeUndefined()
+      // workspace entry dropped, unrelated entry kept
+      expect(workspacePackages()).toEqual(['../keepme'])
+    })
+
+    it('bulk -a over a fork switches direct + transitive members without erroring', () => {
+      // @test/mock-dep is a direct dep; @test/sib is transitive (config-only)
+      const configPath = join(TEST_DIR, '.pnpm-dep-source.json')
+      const config = readJson(configPath)
+      ;(config.dependencies as Record<string, unknown>)['@test/sib'] = {
+        localPath: '../sib', github: 'test-org/mock-dep', npm: '@test/sib',
+      }
+      writeJson(configPath, config)
+      writeFileSync(join(TEST_DIR, 'pnpm-workspace.yaml'), 'packages:\n  - ../sib\n')
+
+      // 'test' matches both @test/mock-dep and @test/sib
+      const out = run('github test -a -R main -I')
+
+      // mock-dep (direct) rewritten; sib (transitive) noted, package.json untouched for it
+      const pkg = readJson(join(TEST_DIR, 'package.json'))
+      expect((pkg.dependencies as Record<string, string>)['@test/mock-dep']).toBe(
+        'https://github.com/test-org/mock-dep#main'
+      )
+      expect((pkg.dependencies as Record<string, string>)['@test/sib']).toBeUndefined()
+      expect(out).toContain('@test/sib to GitHub: https://github.com/test-org/mock-dep#main (transitive; package.json unchanged)')
+      // sib's workspace entry removed (was the only one → file gone)
+      expect(workspacePackages()).toEqual([])
+    })
+  })
+
   describe('multi-match (-a/--all)', () => {
     // Parse the dep names from `gh -n` dry-run output (network-free via -R)
     function switchedDeps(output: string): string[] {

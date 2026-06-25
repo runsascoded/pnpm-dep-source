@@ -184,6 +184,8 @@ pds cr cli parser -a             # multiple patterns, union (deduped)
 
 Matching is unanchored, so `cli` also matches `@slidev/client` (it contains `cli`); anchor with `$` (e.g. `cli$`) to scope it. A pattern that matches nothing errors.
 
+**Transitive deps.** A monorepo fork often tracks sibling packages that aren't *direct* dependencies of the consumer (e.g. only `@slidev/cli` is a direct dep, while `@slidev/client`/`parser`/`types` come transitively). For those, the switch verbs have no `package.json` entry to rewrite — so they skip it (logging `(transitive; package.json unchanged)`) but still manage the dep's `pnpm-workspace.yaml` / `optimizeDeps` / `pnpm.overrides` references. That's what makes `pds cr slidev -a` work end-to-end: `@slidev/cli` is pinned to its pkg.pr.new build, and the siblings are removed from the workspace so they resolve via that build's rewritten sibling URLs instead of your local checkout.
+
 ### Check status
 
 ```bash
