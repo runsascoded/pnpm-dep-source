@@ -17,7 +17,7 @@ import {
 } from './remote.js'
 
 export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown' {
-  if (source === 'workspace:*' || source === 'local') return 'local'
+  if (source === 'workspace:*' || source === 'local' || source.startsWith('link:') || source.startsWith('file:')) return 'local'
   if (source.includes('pkg.pr.new')) return 'cr'
   if (source.startsWith('github:') || source.includes('github.com/')) return 'github'
   if (source.includes('gitlab.com') && source.includes('/-/archive/')) return 'gitlab'
@@ -196,8 +196,11 @@ export function buildProjectDepInfo(
   dep: DepConfig,
   projectRoot: string,
   pkg: Record<string, unknown>,
+  overrides?: Record<string, string>,
 ): DepDisplayInfo {
-  const currentSource = getCurrentSource(pkg, name)
+  // override-managed deps draw their active source from pnpm.overrides, not the
+  // (static baseline) package.json dep spec.
+  const currentSource = (dep.override ? overrides?.[name] : undefined) ?? getCurrentSource(pkg, name)
   const sourceType = getSourceType(currentSource)
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
   const isDev = !!(devDeps && name in devDeps)
@@ -205,7 +208,7 @@ export function buildProjectDepInfo(
   const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined
   const gitInfo = dep.localPath ? getLocalGitInfo(resolve(projectRoot, dep.localPath)) : null
 
-  const committedPkg = getCommittedPackageJson(projectRoot)
+  const committedPkg = dep.override ? null : getCommittedPackageJson(projectRoot)
   const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined
   const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
     ? committedSrc : undefined
@@ -249,8 +252,11 @@ export async function buildProjectDepInfoAsync(
   dep: DepConfig,
   projectRoot: string,
   pkg: Record<string, unknown>,
+  overrides?: Record<string, string>,
 ): Promise<DepDisplayInfo> {
-  const currentSource = getCurrentSource(pkg, name)
+  // override-managed deps draw their active source from pnpm.overrides, not the
+  // (static baseline) package.json dep spec.
+  const currentSource = (dep.override ? overrides?.[name] : undefined) ?? getCurrentSource(pkg, name)
   const sourceType = getSourceType(currentSource)
   const devDeps = pkg.devDependencies as Record<string, string> | undefined
   const isDev = !!(devDeps && name in devDeps)
@@ -259,7 +265,8 @@ export async function buildProjectDepInfoAsync(
   const gitInfo = dep.localPath ? await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath)) : null
 
   // Check if the dep specifier differs from what's committed
-  const committedPkg = getCommittedPackageJson(projectRoot)
+  // Check if the dep specifier differs from what's committed
+  const committedPkg = dep.override ? null : getCommittedPackageJson(projectRoot)
   const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined
   const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
     ? committedSrc : undefined

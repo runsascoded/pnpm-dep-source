@@ -22,6 +22,7 @@ import {
   pkgPrNewBuildExists,
 } from './remote.js'
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
+import { detectFleet, type FleetDetection } from './fleet.js'
 import { setLogLevel, setRetries } from './log.js'
 import {
   makeGitHubSpecifier, makePkgPrNewSpecifier,
@@ -128,6 +129,7 @@ type InitOptions = {
   install: boolean
   local?: string
   npm?: string
+  override?: boolean
   rawRef?: string
   source?: string
 }
@@ -223,6 +225,7 @@ function initOne(
       npm: npmName,
       distBranch: options.distBranch,
       subdir,
+      override: options.override || undefined,
     }
     saveGlobalConfig(config)
     console.log(`Initialized ${pkgName} (global):`)
@@ -250,6 +253,7 @@ function initOne(
     npm: npmName,
     distBranch: options.distBranch,
     subdir,
+    override: options.override || undefined,
   }
   config.dependencies[pkgName] = depConfig
 
@@ -281,7 +285,7 @@ function initOne(
   }
 
   if (activateSource === 'local' && relLocalPath) {
-    switchToLocal(projectRoot!, pkgName, relLocalPath, workspaceRoot)
+    switchToLocal(projectRoot!, pkgName, depConfig, workspaceRoot)
     return true
   } else if (activateSource === 'github') {
     if (!github) throw new Error(`No GitHub repo configured for ${pkgName}. Use -H/--github to specify one.`)
@@ -309,9 +313,91 @@ function initOne(
   return false
 }
 
+// Resolve the post-init activation source from -s/--source (default local).
+function resolveActivateSource(
+  source: string | undefined,
+  pick: (hasGitHub: boolean, hasGitLab: boolean) => 'github' | 'gitlab',
+): 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'git' {
+  if (!source) return 'local'
+  const s = source.toLowerCase()
+  if (s === 'local' || s === 'l') return 'local'
+  if (s === 'github' || s === 'gh') return 'github'
+  if (s === 'gitlab' || s === 'gl') return 'gitlab'
+  if (s === 'cr' || s === 'pkg-pr-new') return 'cr'
+  if (s === 'npm' || s === 'n') return 'npm'
+  if (s === 'git' || s === 'g') return 'git'
+  throw new Error(`Unknown --source value: '${source}'. Use: local, github/gh, git/g, gitlab/gl, cr/pkg-pr-new, npm`)
+}
+
+// Register a detected monorepo fleet (hint-file- or auto-detected) as a set of
+// pds-managed deps and activate them. Members are managed as a unit (override
+// strategy by default), so the consumer can `pds [l|cr] <repo> -a` afterward.
+// Returns true (always a mutation when there are members).
+function registerFleet(
+  fleet: FleetDetection,
+  options: InitOptions,
+  projectRoot: string,
+  workspaceRoot: string | null | undefined,
+): boolean {
+  const config = loadConfig(projectRoot)
+  const useOverride = fleet.strategy === 'override' || !!options.override
+  const requested = resolveActivateSource(options.source, () => 'github')
+
+  for (const m of fleet.members) {
+    config.dependencies[m.npm] = {
+      localPath: relative(projectRoot, m.localPath),
+      github: m.github,
+      gitlab: m.gitlab,
+      npm: m.npm,
+      distBranch: options.distBranch,
+      subdir: m.subdir,
+      override: useOverride || undefined,
+    }
+  }
+  saveConfig(projectRoot, config)
+
+  console.log(`Initialized fleet (${fleet.members.length} package${fleet.members.length === 1 ? '' : 's'}, ${useOverride ? 'override' : 'default'} strategy${fleet.fromHint ? ', from hint file' : ', auto-detected'}):`)
+  for (const m of fleet.members) {
+    console.log(`  ${m.npm}${m.subdir ? ` ${c.cyan}[${m.subdir}]${c.reset}` : ''}`)
+  }
+
+  for (const m of fleet.members) {
+    const depConfig = config.dependencies[m.npm]
+    let source = requested
+    if (source === 'git') {
+      if (depConfig.github && depConfig.gitlab) throw new Error(`Both GitHub and GitLab configured for ${m.npm}. Use -s gh or -s gl explicitly.`)
+      source = depConfig.github ? 'github' : 'gitlab'
+    }
+    switch (source) {
+      case 'local':
+        switchToLocal(projectRoot, m.npm, depConfig, workspaceRoot)
+        break
+      case 'github':
+        switchToGitHub(projectRoot, m.npm, depConfig, options.rawRef, workspaceRoot)
+        break
+      case 'gitlab':
+        switchToGitLab(projectRoot, m.npm, depConfig, options.rawRef, workspaceRoot)
+        break
+      case 'cr': {
+        if (!depConfig.github) throw new Error(`No GitHub repo configured for ${m.npm}`)
+        if (!depConfig.npm) throw new Error(`No npm package name configured for ${m.npm}`)
+        const sha = options.rawRef ?? resolveGitHubRef(depConfig.github, 'HEAD')
+        switchToPkgPrNew(projectRoot, m.npm, depConfig, sha, workspaceRoot)
+        break
+      }
+      case 'npm': {
+        const latest = getLatestNpmVersion(depConfig.npm ?? m.npm)
+        switchToNpm(projectRoot, m.npm, depConfig, `^${latest}`, workspaceRoot)
+        break
+      }
+    }
+  }
+  return true
+}
+
 program
   .command('init [paths-or-urls...]')
-  .description('Initialize (or reinitialize) one or more dependencies from local paths or repo URLs and activate them. Re-running init on an existing dep refreshes its config from the local package.json.')
+  .description('Initialize (or reinitialize) one or more dependencies from local paths or repo URLs and activate them. A local path that is a monorepo root (a pds.json/package.json#pds hint file, or a pnpm/npm workspace) expands to its whole fleet, managed via pnpm.overrides. Re-running init on an existing dep refreshes its config from the local package.json.')
   .option('-b, --dist-branch <branch>', 'Git branch for dist builds', 'dist')
   .option('-D, --dev', 'Add as devDependency (if adding to package.json)')
   .option('-f, --force', 'Suppress mismatch warnings')
@@ -321,6 +407,7 @@ program
   .option('-L, --gitlab <repo>', 'GitLab repo (e.g. "user/repo")')
   .option('-l, --local <path>', 'Local path (when initializing from URL)')
   .option('-n, --npm <name>', 'NPM package name (defaults to name from package.json)')
+  .option('-o, --override', 'Manage via pnpm.overrides (forces the whole graph, incl. transitive monorepo siblings) instead of rewriting the package.json dep spec')
   .option('-R, --raw-ref <ref>', 'Git ref for GitHub/GitLab activation (used as-is, e.g. branch name)')
   .option('-s, --source <source>', 'Activate source after init: local, github/gh, gitlab/gl, cr/pkg-pr-new, npm (default: local for path, inferred for URL)')
   .action((pathsOrUrls: string[], options: InitOptions & { keepGoing?: boolean }, cmd: { help: () => void }) => {
@@ -334,6 +421,15 @@ program
     let anyMutation = false
 
     runMultiple(pathsOrUrls, !!options.keepGoing, pathOrUrl => {
+      // A local path that is a monorepo root (hint file or workspace) expands to
+      // its fleet, so `pds init <repo>` registers the whole set in one shot.
+      if (!isGlobal && !isRepoUrl(pathOrUrl)) {
+        const fleet = detectFleet(resolve(pathOrUrl))
+        if (fleet) {
+          if (registerFleet(fleet, options, projectRoot!, workspaceRoot)) anyMutation = true
+          return
+        }
+      }
       if (initOne(pathOrUrl, options, isGlobal, projectRoot, workspaceRoot)) {
         anyMutation = true
       }
@@ -352,7 +448,9 @@ program
   .option('-l, --local <path>', 'Set local path (use "" to remove)')
   .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
   .option('-n, --npm <name>', 'Set NPM package name')
-  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; gitlab?: string; local?: string; npm?: string }) => {
+  .option('-o, --override', 'Manage via pnpm.overrides (forces the whole graph, incl. transitive monorepo siblings)')
+  .option('-O, --no-override', 'Stop managing via pnpm.overrides')
+  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; gitlab?: string; local?: string; npm?: string; override?: boolean }) => {
     const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
@@ -411,8 +509,19 @@ program
       changed = true
     }
 
+    if (options.override !== undefined) {
+      if (options.override) {
+        dep.override = true
+        console.log(`  Override: pnpm.overrides`)
+      } else {
+        delete dep.override
+        console.log(`  Override: off`)
+      }
+      changed = true
+    }
+
     if (!changed) {
-      console.log(`No changes specified. Use -l, -H, -L, -n, or -b to update fields.`)
+      console.log(`No changes specified. Use -l, -H, -L, -n, -b, or -o/-O to update fields.`)
       return
     }
 
@@ -502,6 +611,15 @@ program
     await listDepsAsync(options.verbose ?? false, options.all, filters.length ? filters : undefined, options.source)
   })
 
+// pnpm.overrides live at the workspace root; load that map (override-managed
+// deps surface their active source from it, not the package.json dep spec).
+function loadOverrides(projectRoot: string, projectPkg: Record<string, unknown>): Record<string, string> {
+  const workspaceRoot = findWorkspaceRoot(projectRoot)
+  const pkg = workspaceRoot && workspaceRoot !== projectRoot ? loadPackageJson(workspaceRoot) : projectPkg
+  const pnpm = pkg.pnpm as Record<string, unknown> | undefined
+  return (pnpm?.overrides as Record<string, string> | undefined) ?? {}
+}
+
 function filterEntries(entries: [string, DepConfig][], filters?: string[]): [string, DepConfig][] {
   if (!filters) return entries
   return entries.filter(([name]) =>
@@ -567,10 +685,12 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
   let projectRoot: string | undefined
   let projectEntries: [string, DepConfig][] = []
   let pkg: Record<string, unknown> | undefined
+  let overrides: Record<string, string> = {}
   if (!isGlobal) {
     projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     pkg = loadPackageJson(projectRoot)
+    overrides = loadOverrides(projectRoot, pkg)
 
     if (Object.keys(config.dependencies).length === 0 && !all) {
       console.log('No dependencies configured. Use "pds init <path>" to add one.')
@@ -588,7 +708,7 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
 
   // Launch everything concurrently: dep info builds, global sources, and remote version fetches
   const [projectInfos, globalInfos, projectVersions, globalVersions] = await Promise.all([
-    Promise.all(projectEntries.map(([name, dep]) => buildProjectDepInfoAsync(name, dep, projectRoot!, pkg!))),
+    Promise.all(projectEntries.map(([name, dep]) => buildProjectDepInfoAsync(name, dep, projectRoot!, pkg!, overrides))),
     globalSourcesPromise
       ? globalSourcesPromise.then(sources =>
           Promise.all(globalEntries.map(([name, dep]) => buildGlobalDepInfoAsync(name, dep, sources)))
@@ -679,7 +799,7 @@ program
       if (!depConfig.localPath) {
         throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
       }
-      switchToLocal(projectRoot, depName, depConfig.localPath, workspaceRoot)
+      switchToLocal(projectRoot, depName, depConfig, workspaceRoot)
     })
 
     if (options.install) {
@@ -1112,16 +1232,19 @@ program
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
     const pkg = loadPackageJson(projectRoot)
+    const overrides = loadOverrides(projectRoot, pkg)
 
     const deps = depQuery
       ? [findMatchingDep(config, depQuery)]
       : Object.entries(config.dependencies)
 
-    for (const [name] of deps) {
-      const current = getCurrentSource(pkg, name)
+    for (const [name, dep] of deps) {
+      const override = dep.override ? overrides[name] : undefined
+      const current = override ?? getCurrentSource(pkg, name)
       const sourceType = getSourceType(current)
+      const tag = override ? ' [override]' : ''
 
-      console.log(`${name}: ${sourceType} (${current})`)
+      console.log(`${name}: ${sourceType} (${current})${tag}`)
     }
   })
 
@@ -1197,7 +1320,8 @@ program
     console.log(`  source: unknown`)
   })
 
-// Check if any pds-managed deps are set to local (workspace:*)
+// Check if any pds-managed deps are set to local (workspace:* dep spec, or a
+// link:/file: pnpm.override for override-managed deps)
 function checkLocalDeps(projectRoot: string): { name: string; source: string }[] {
   const configPath = resolveConfigPath(projectRoot)
   if (!existsSync(configPath)) {
@@ -1206,11 +1330,13 @@ function checkLocalDeps(projectRoot: string): { name: string; source: string }[]
 
   const config = loadConfig(projectRoot)
   const pkg = loadPackageJson(projectRoot)
+  const overrides = loadOverrides(projectRoot, pkg)
   const localDeps: { name: string; source: string }[] = []
 
-  for (const name of Object.keys(config.dependencies)) {
-    const source = getCurrentSource(pkg, name)
-    if (source === 'workspace:*') {
+  for (const [name, dep] of Object.entries(config.dependencies)) {
+    const override = dep.override ? overrides[name] : undefined
+    const source = override ?? getCurrentSource(pkg, name)
+    if (source === 'workspace:*' || source.startsWith('link:') || source.startsWith('file:')) {
       localDeps.push({ name, source })
     }
   }

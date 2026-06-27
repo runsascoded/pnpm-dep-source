@@ -20,8 +20,32 @@ export function savePackageJson(projectRoot: string, pkg: Record<string, unknown
   if (pkg.devDependencies) {
     pkg.devDependencies = sortKeys(pkg.devDependencies as Record<string, string>)
   }
+  const pnpm = pkg.pnpm as Record<string, unknown> | undefined
+  if (pnpm?.overrides) {
+    pnpm.overrides = sortKeys(pnpm.overrides as Record<string, string>)
+  }
   const pkgPath = join(projectRoot, 'package.json')
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
+}
+
+export function setPnpmOverride(pkg: Record<string, unknown>, depName: string, specifier: string): void {
+  let pnpm = pkg.pnpm as Record<string, unknown> | undefined
+  if (!pnpm) {
+    pnpm = {}
+    pkg.pnpm = pnpm
+  }
+  let overrides = pnpm.overrides as Record<string, string> | undefined
+  if (!overrides) {
+    overrides = {}
+    pnpm.overrides = overrides
+  }
+  overrides[depName] = specifier
+}
+
+export function getPnpmOverride(pkg: Record<string, unknown>, depName: string): string | undefined {
+  const pnpm = pkg.pnpm as Record<string, unknown> | undefined
+  const overrides = pnpm?.overrides as Record<string, string> | undefined
+  return overrides?.[depName]
 }
 
 export function removePnpmOverride(pkg: Record<string, unknown>, depName: string): void {
@@ -33,9 +57,12 @@ export function removePnpmOverride(pkg: Record<string, unknown>, depName: string
 
   delete overrides[depName]
 
-  // Clean up empty overrides object
+  // Clean up empty overrides object, and the pnpm block if it's now empty too
   if (Object.keys(overrides).length === 0) {
     delete pnpm.overrides
+    if (Object.keys(pnpm).length === 0) {
+      delete pkg.pnpm
+    }
   }
 }
 

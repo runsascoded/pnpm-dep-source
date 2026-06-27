@@ -1161,6 +1161,99 @@ export default defineConfig({
       expect(deps['@test/multi-b']).toBe('workspace:*')
     })
   })
+
+  describe('override mode (pnpm.overrides)', () => {
+    const CONFIG = join(TEST_DIR, '.pnpm-dep-source.json')
+    const PKG = join(TEST_DIR, 'package.json')
+    const overridesOf = () =>
+      (readJson(PKG).pnpm as { overrides?: Record<string, string> } | undefined)?.overrides
+    const overrideFlag = () =>
+      (readJson(CONFIG).dependencies as Record<string, { override?: boolean }>)['@test/mock-dep'].override
+
+    it('set -o enables override; -O disables it', () => {
+      run('set mock-dep -o')
+      expect(overrideFlag()).toBe(true)
+      run('set mock-dep -O')
+      expect(overrideFlag()).toBeUndefined()
+    })
+
+    it('local writes a link: override and leaves the package.json dep spec + workspace untouched', () => {
+      run('set mock-dep -o')
+      run('local mock-dep -I')
+
+      expect(overridesOf()).toEqual({ '@test/mock-dep': 'link:../mock-dep' })
+      // Baseline dep spec unchanged (still the npm range), no workspace file, no vite churn
+      expect((readJson(PKG).dependencies as Record<string, string>)['@test/mock-dep']).toBe('^1.0.0')
+      expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+      expect(readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')).not.toContain('optimizeDeps')
+    })
+
+    it('github → local → github rewrites only the single override entry', () => {
+      run('set mock-dep -o')
+
+      run('github mock-dep -R main -I')
+      expect(overridesOf()).toEqual({ '@test/mock-dep': 'https://github.com/test-org/mock-dep#main' })
+
+      run('local mock-dep -I')
+      expect(overridesOf()).toEqual({ '@test/mock-dep': 'link:../mock-dep' })
+
+      run('github mock-dep -R main -I')
+      expect(overridesOf()).toEqual({ '@test/mock-dep': 'https://github.com/test-org/mock-dep#main' })
+    })
+
+    it('status reports the override-driven source with an [override] tag', () => {
+      run('set mock-dep -o')
+      run('github mock-dep -R main -I')
+      const out = run('status mock-dep').trim()
+      expect(out).toBe('@test/mock-dep: github (https://github.com/test-org/mock-dep#main) [override]')
+    })
+
+    it('deinit removes the override entry and the empty pnpm block', () => {
+      run('set mock-dep -o')
+      run('local mock-dep -I')
+      expect(overridesOf()).toEqual({ '@test/mock-dep': 'link:../mock-dep' })
+
+      run('deinit mock-dep')
+      expect('pnpm' in readJson(PKG)).toBe(false)
+    })
+  })
+
+  describe('init fleet expansion (monorepo hint)', () => {
+    const MONO = join(__dirname, 'fixtures', 'fleet-src')
+
+    function setupFleetSrc(): void {
+      if (existsSync(MONO)) rmSync(MONO, { recursive: true })
+      mkdirSync(join(MONO, 'packages/cli'), { recursive: true })
+      mkdirSync(join(MONO, 'packages/core'), { recursive: true })
+      writeJson(join(MONO, 'package.json'), { name: '@fleet/root', private: true })
+      writeFileSync(join(MONO, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n')
+      writeJson(join(MONO, 'pds.json'), { strategy: 'override', fleet: ['@fleet/cli', '@fleet/core'] })
+      writeJson(join(MONO, 'packages/cli/package.json'), { name: '@fleet/cli', version: '1.0.0' })
+      writeJson(join(MONO, 'packages/core/package.json'), { name: '@fleet/core', version: '1.0.0' })
+    }
+
+    beforeEach(setupFleetSrc)
+    afterEach(() => {
+      if (existsSync(MONO)) rmSync(MONO, { recursive: true })
+    })
+
+    it('init <monorepo-root> registers the hint fleet as override deps and writes link overrides', () => {
+      run(`init ${MONO} -I`)
+
+      const config = readJson(join(TEST_DIR, '.pnpm-dep-source.json'))
+      const deps = config.dependencies as Record<string, { override?: boolean; subdir?: string; npm?: string }>
+      // Fleet members added alongside the project's pre-existing deps
+      expect(Object.keys(deps)).toEqual(expect.arrayContaining(['@fleet/cli', '@fleet/core']))
+      expect(deps['@fleet/cli'].override).toBe(true)
+      expect(deps['@fleet/cli'].subdir).toBe('/packages/cli')
+      expect(deps['@fleet/core'].override).toBe(true)
+      expect(deps['@fleet/core'].subdir).toBe('/packages/core')
+
+      const overrides = (readJson(join(TEST_DIR, 'package.json')).pnpm as { overrides: Record<string, string> }).overrides
+      expect(overrides['@fleet/cli']).toMatch(/^link:.*\/packages\/cli$/)
+      expect(overrides['@fleet/core']).toMatch(/^link:.*\/packages\/core$/)
+    })
+  })
 })
 
 // Workspace-aware (monorepo sub-package) tests

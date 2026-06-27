@@ -186,6 +186,68 @@ Matching is unanchored, so `cli` also matches `@slidev/client` (it contains `cli
 
 **Transitive deps.** A monorepo fork often tracks sibling packages that aren't *direct* dependencies of the consumer (e.g. only `@slidev/cli` is a direct dep, while `@slidev/client`/`parser`/`types` come transitively). For those, the switch verbs have no `package.json` entry to rewrite — so they skip it (logging `(transitive; package.json unchanged)`) but still manage the dep's `pnpm-workspace.yaml` / `optimizeDeps` / `pnpm.overrides` references. That's what makes `pds cr slidev -a` work end-to-end: `@slidev/cli` is pinned to its pkg.pr.new build, and the siblings are removed from the workspace so they resolve via that build's rewritten sibling URLs instead of your local checkout.
 
+### Override strategy (`-o`/`--override`)
+
+The default switch strategy rewrites each dep's **`package.json` dependency spec**. That works for a normal single-package dep, but it can't force *transitive* siblings to follow: e.g. with the deck depending only on `@slidev/cli`, switching `@slidev/cli` to a local checkout still leaves `@slidev/client`/`parser`/`types` resolving from upstream npm unless every consumer in the graph also points at your fork.
+
+Mark a dep `override: true` (via `pds init -o` or `pds set -o`, disable with `pds set -O`) and `pds` manages it through **`pnpm.overrides`** (at the workspace root) instead. A `pnpm.overrides` entry forces resolution for the **entire dependency graph**, including transitive siblings — so it delivers your forked packages everywhere, which is exactly what a monorepo fork needs.
+
+With `override: true`, each switch verb rewrites only the single `pnpm.overrides[<name>]` value and leaves the `package.json` dep spec, `pnpm-workspace.yaml`, and `vite.config.ts` untouched (they become a static baseline):
+
+| verb | `pnpm.overrides[<name>]` value |
+| --- | --- |
+| `pds l` | `link:<relative-path>` (symlink to the local checkout; its own `node_modules` resolves the siblings) |
+| `pds cr` | `https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha>` |
+| `pds gh` | `https://github.com/<owner>/<repo>#<sha>` |
+| `pds gl` | GitLab archive tarball URL |
+| `pds npm` | `^<version>` (pins the whole graph to a published version) |
+
+`pds deinit`/`rm` strip the override entry (and the now-empty `pnpm` block). `pds status`/`ls` read the active source from `pnpm.overrides` for override-managed deps (tagged `[override]`), and the local-dependency `check` hook treats a `link:`/`file:` override as "local" too.
+
+This is the recommended setup for toggling a monorepo fork's whole fleet between a local checkout and a SHA-pinned remote build:
+
+```bash
+# one-time: mark each fleet member as override-managed
+pds set @slidev/cli @slidev/client @slidev/parser @slidev/types -o   # (or pds init -o ...)
+
+pds l  slidev -a    # whole fleet → local checkout (HMR against your clone)
+pds cr slidev -a    # whole fleet → SHA-pinned pkg.pr.new build of your fork
+```
+
+> **Note:** `pnpm` resolves `link:`/`file:` overrides relative to the workspace root and only honors `pnpm.overrides` declared there, so `pds` always writes the override to the workspace-root `package.json` (the dir holding `pnpm-workspace.yaml`, or the single-package project root). When toggling under `shamefullyHoist: true`, a stale flat symlink can linger; `rm -rf node_modules && pnpm install` clears it.
+>
+> **Declare your own config deps.** Managing a fork via overrides (rather than as a `pnpm-workspace.yaml` member) means its transitive deps are no longer *hoisted* into your flat `node_modules`. If your **own** config imports one of them — e.g. a `vite.config.ts` doing `import { defineConfig } from 'vite'`, where `vite` used to come transitively from the workspace-membered fork — add it as a direct (dev)dependency. Packages you only use *through* the linked/built fork still resolve via its own tree.
+
+### Auto-configuring a monorepo fleet
+
+You don't have to register each fork sub-package by hand. Point `init` at a **monorepo root** and `pds` expands it into the whole fleet (override-managed), so the consumer never has to know the sub-package layout:
+
+```bash
+pds init ../slidev          # registers @slidev/cli, @slidev/client, @slidev/parser, @slidev/types
+pds l  slidev -a            # then toggle the fleet as usual
+pds cr slidev -a
+```
+
+`init <root>` determines the fleet in this order:
+
+1. **Hint file** — `pds.json` at the repo root (or a `"pds"` key in its `package.json`). This is the authoritative, zero-guesswork path: the library/fork declares exactly which packages are consumable and how. Recommended for anything with non-fleet packages (scaffolders, docs, examples) that auto-detect would otherwise sweep in:
+
+   ```json
+   // <repo-root>/pds.json
+   {
+     "strategy": "override",
+     "fleet": ["@slidev/cli", "@slidev/client", "@slidev/parser", "@slidev/types"]
+   }
+   ```
+
+   `strategy` is `"override"` (default for a multi-package fleet) or `"default"`; `fleet` is the npm names to include (omit to take all publishable workspace packages).
+
+2. **Auto-detect** — no hint: `pds` enumerates the workspace (`pnpm-workspace.yaml` `packages:`, or `package.json` `workspaces`) and takes the **publishable** (non-`private`) packages. Multiple members ⇒ `override` strategy. Repo (`github`/`gitlab`) is detected from the root's git remote; each member's `npm` name and `subdir` come from its own `package.json`.
+
+3. **Explicit `-o`** — for a single package (not a monorepo), `pds init -o <path>` / `pds set -o <dep>` opts that one dep into override management.
+
+A plain (non-workspace) package path still inits as a single dep, exactly as before.
+
 ### Check status
 
 ```bash
@@ -389,14 +451,15 @@ The tool stores configuration in `.pds.json` (also supports `.pnpm-dep-source.js
       "gitlab": "user/repo",
       "npm": "@scope/package-name",
       "distBranch": "dist",
-      "subdir": "/packages/client"
+      "subdir": "/packages/client",
+      "override": true
     }
   },
   "checkOn": "pre-push"
 }
 ```
 
-The `subdir` field is optional and auto-detected during `init` for monorepo packages.
+The `subdir` field is optional and auto-detected during `init` for monorepo packages. The `override` field is optional — when `true`, `pds` manages the dep through `pnpm.overrides` instead of the `package.json` dep spec (see [Override strategy](#override-strategy--o--override)).
 
 Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default), `"pre-commit"`, or `"none"` to disable. The legacy `"skipCheck": true` is still supported (treated as `"checkOn": "none"`).
 
@@ -419,6 +482,7 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 - `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
 - `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
 - `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`cr`/`npm`)
+- `-o, --override` / `-O, --no-override`: Manage the dep through `pnpm.overrides` (forces the whole graph, incl. transitive monorepo siblings) instead of the `package.json` dep spec (for `init`/`set`; see [Override strategy](#override-strategy--o--override))
 - `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab`/`cr` commands)
 - `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)
 - `-s, --source <source>`: Activate a specific source after `init` (`gh`, `gl`, `cr`, `npm`, or `g` to auto-detect)

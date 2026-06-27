@@ -5,6 +5,9 @@ export interface DepConfig {
   npm?: string          // e.g. "use-kbd" (defaults to package name from local)
   distBranch?: string   // defaults to "dist"
   subdir?: string       // e.g. "/packages/client" for monorepo subdirectory
+  override?: boolean    // manage via pnpm.overrides (force whole graph, incl.
+                        // transitive monorepo siblings) instead of rewriting the
+                        // package.json dep spec; local→link:<path>, else the URL
 }
 
 export interface Config {
