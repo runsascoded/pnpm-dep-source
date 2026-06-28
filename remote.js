@@ -3,6 +3,20 @@ import { existsSync, readFileSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { spawnAsync } from './process.js';
 import { log, getConfiguredRetries } from './log.js';
+// Deterministic "this ref/resource doesn't exist" responses from gh/glab.
+// Retrying won't help, and for forks that publish via pkg.pr.new (no `dist`
+// branch) a missing dist ref is an expected, handled condition — not a failure
+// worth warning about.
+export function isNotFoundError(msg) {
+    return /\bHTTP (404|422)\b|No commit found|404 Not Found/i.test(msg);
+}
+// Narrower than isNotFoundError: the *ref/branch* is absent though the repo
+// itself resolved (gh says "No commit found for the ref …"; glab "Commit Not
+// Found"). Used at init to mark `noDist` — so a typo'd or nonexistent repo (a
+// bare "Not Found") is NOT mistaken for "exists but has no dist branch".
+export function isMissingRef(msg) {
+    return /No commit found|Commit Not Found/i.test(msg);
+}
 async function withRetry(label, fn) {
     const maxRetries = getConfiguredRetries();
     let lastErr;
@@ -13,6 +27,12 @@ async function withRetry(label, fn) {
         catch (err) {
             lastErr = err;
             const msg = err instanceof Error ? err.message : String(err);
+            if (isNotFoundError(msg)) {
+                // Definitive absence: don't retry, don't warn (expected for repos
+                // lacking the probed ref/branch). Surface at debug for diagnosis.
+                log.debug(`${label}: not found: ${msg}`);
+                break;
+            }
             if (attempt < maxRetries) {
                 log.debug(`${label}: attempt ${attempt + 1} failed (${msg}), retrying...`);
             }
@@ -190,6 +210,17 @@ export function resolveGitLabRefAsync(repo, ref) {
     });
     glRefCache.set(key, promise);
     return promise;
+}
+// Check whether a pkg.pr.new build URL resolves (CI only publishes after building
+// the SHA). Warn-only: returns false on 404 / network error rather than throwing.
+export async function pkgPrNewBuildExists(url) {
+    try {
+        const resp = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+        return resp.ok;
+    }
+    catch {
+        return false;
+    }
 }
 // Parse GitHub/GitLab repo from a URL string
 export function parseRepoUrl(repoUrl) {
@@ -436,15 +467,20 @@ export function parseGlobalPkgSource(pkg, globalDir) {
     const version = pkg.version || '';
     const resolved = pkg.resolved || '';
     const pkgPath = pkg.path || '';
-    // Local file install: version is "file:..." path
-    if (version.startsWith('file:')) {
+    // Local install: version is "file:..." (copy) or "link:..." (live symlink) path
+    if (version.startsWith('file:') || version.startsWith('link:')) {
         const filePath = version.slice(5);
         const absPath = globalDir ? resolve(globalDir, filePath) : filePath;
         return { source: 'local', specifier: absPath };
     }
     // Check resolved URL and install path for source detection
     const resolvedOrPath = resolved || pkgPath;
-    if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
+    if (resolvedOrPath.includes('pkg.pr.new')) {
+        const shaMatch = resolvedOrPath.match(/@([0-9a-f]+)(?:\.tgz)?$/);
+        const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
+        return { source: 'cr', specifier: `${sha}; ${version}` };
+    }
+    else if (resolvedOrPath.includes('codeload.github.com') || resolvedOrPath.includes('github.com')) {
         const shaMatch = resolvedOrPath.match(/([a-f0-9]{40})/);
         const sha = shaMatch ? shaMatch[1].slice(0, 7) : '';
         return { source: 'github', specifier: `${sha}; ${version}` };

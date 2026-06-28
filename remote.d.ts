@@ -1,4 +1,6 @@
 import type { PackageInfo } from './types.js';
+export declare function isNotFoundError(msg: string): boolean;
+export declare function isMissingRef(msg: string): boolean;
 export declare function getLocalGitInfo(localPath: string): {
     sha: string;
     dirty: boolean;
@@ -15,6 +17,7 @@ export declare function resolveGitHubRef(repo: string, ref: string): string;
 export declare function resolveGitHubRefAsync(repo: string, ref: string): Promise<string>;
 export declare function resolveGitLabRef(repo: string, ref: string): string;
 export declare function resolveGitLabRefAsync(repo: string, ref: string): Promise<string>;
+export declare function pkgPrNewBuildExists(url: string): Promise<boolean>;
 export declare function parseRepoUrl(repoUrl: string): {
     github?: string;
     gitlab?: string;

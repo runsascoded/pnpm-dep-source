@@ -51,6 +51,24 @@ export function findMatchingDep(config, query) {
     }
     return matches[0];
 }
+// Match ALL deps whose name matches `query`, treated as a case-insensitive regex
+// (a plain "base" string like "slidev" works as an unanchored substring match).
+// Throws if the pattern is invalid or matches nothing.
+export function findAllMatchingDeps(config, query) {
+    let re;
+    try {
+        re = new RegExp(query, 'i');
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Invalid pattern "${query}": ${msg}`);
+    }
+    const matches = Object.entries(config.dependencies).filter(([name]) => re.test(name));
+    if (matches.length === 0) {
+        throw new Error(`No dependency matching /${query}/ found in config`);
+    }
+    return matches;
+}
 export function loadHooksConfig() {
     if (!existsSync(HOOKS_CONFIG_FILE)) {
         return {};

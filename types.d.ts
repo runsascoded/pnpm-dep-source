@@ -4,7 +4,9 @@ export interface DepConfig {
     gitlab?: string;
     npm?: string;
     distBranch?: string;
+    noDist?: boolean;
     subdir?: string;
+    override?: boolean;
 }
 export interface Config {
     dependencies: Record<string, DepConfig>;
@@ -26,7 +28,7 @@ export interface DepDisplayInfo {
     name: string;
     currentSource: string;
     currentSpecifier?: string;
-    sourceType: 'local' | 'github' | 'gitlab' | 'npm' | 'unknown';
+    sourceType: 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown';
     isDev?: boolean;
     isGlobal?: boolean;
     version?: string;
@@ -44,6 +46,8 @@ export type RemoteVersions = {
     githubVersion?: string;
     gitlab?: string;
     gitlabVersion?: string;
+    githubDistMissing?: boolean;
+    gitlabDistMissing?: boolean;
     committedDistSha?: string;
     committedDistVersion?: string;
     localAheadOfPinned?: number;

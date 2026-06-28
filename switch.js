@@ -1,10 +1,31 @@
 import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { join, relative, resolve } from 'path';
 import { c } from './constants.js';
-import { loadPackageJson, savePackageJson, updatePackageJsonDep, removePnpmOverride, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
+import { loadPackageJson, savePackageJson, updatePackageJsonDep, setPnpmOverride, removePnpmOverride, hasDependency, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
 import { resolveGitHubRef, resolveGitLabRef } from './remote.js';
 import { workspaceLocalPath } from './project.js';
+// pnpm.overrides live at the workspace root (the dir holding pnpm-workspace.yaml,
+// or the single-package project root). `override`-managed deps force the WHOLE
+// graph — including transitive monorepo siblings — to a single source, which the
+// per-dependency package.json-rewrite strategy can't do.
+function overrideRoot(projectRoot, workspaceRoot) {
+    return workspaceRoot ?? projectRoot;
+}
+// Write (or, with `specifier === null`, remove) a pnpm.overrides entry.
+function applyOverride(root, depName, specifier) {
+    const pkg = loadPackageJson(root);
+    if (specifier === null)
+        removePnpmOverride(pkg, depName);
+    else
+        setPnpmOverride(pkg, depName, specifier);
+    savePackageJson(root, pkg);
+}
+// `link:<path>` specifier for an override-managed local dep. localPath is relative
+// to projectRoot; the override is declared at `root`, so re-relativize.
+export function makeLinkSpecifier(projectRoot, root, localPath) {
+    return `link:${relative(root, resolve(projectRoot, localPath))}`;
+}
 export function updateViteConfig(projectRoot, depName, exclude) {
     const vitePath = join(projectRoot, 'vite.config.ts');
     if (!existsSync(vitePath)) {
@@ -132,11 +153,47 @@ export function makeGitHubSpecifier(repo, ref, subdir) {
     }
     return `https://github.com/${repo}#${ref}`;
 }
-// Helper to switch a dependency to local mode
-export function switchToLocal(projectRoot, depName, localPath, workspaceRoot) {
+// Generate a pkg.pr.new continuous-release URL: a raw HTTPS tarball-style
+// specifier pnpm installs directly (mechanically like the GitLab tarball URL).
+// Format: https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha>
+// `repo` is the GitHub "owner/repo"; `npm` is the package name (scope included).
+export function makePkgPrNewSpecifier(repo, npm, sha) {
+    return `https://pkg.pr.new/${repo}/${npm}@${sha}`;
+}
+// pds can track transitive deps of a monorepo fork (e.g. `@slidev/client` when
+// only `@slidev/cli` is a direct dep). Those have no package.json entry to
+// rewrite, but still need their workspace/override references managed. Apply the
+// specifier when the dep is a direct dependency; always strip any pnpm override.
+// Returns whether it was a direct dependency.
+function applyPackageJsonSpecifier(projectRoot, depName, specifier) {
     const pkg = loadPackageJson(projectRoot);
-    updatePackageJsonDep(pkg, depName, 'workspace:*');
+    const inPkg = hasDependency(pkg, depName);
+    if (inPkg)
+        updatePackageJsonDep(pkg, depName, specifier);
+    removePnpmOverride(pkg, depName);
     savePackageJson(projectRoot, pkg);
+    return inPkg;
+}
+const transitiveNote = (inPkg) => inPkg ? '' : ' (transitive; package.json unchanged)';
+// Helper to switch a dependency to local mode
+export function switchToLocal(projectRoot, depName, depConfig, workspaceRoot) {
+    const localPath = depConfig.localPath;
+    if (!localPath) {
+        throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`);
+    }
+    if (depConfig.override) {
+        const root = overrideRoot(projectRoot, workspaceRoot);
+        const specifier = makeLinkSpecifier(projectRoot, root, localPath);
+        applyOverride(root, depName, specifier);
+        console.log(`Switched ${depName} to local (override): ${specifier}`);
+        return;
+    }
+    const pkg = loadPackageJson(projectRoot);
+    const inPkg = hasDependency(pkg, depName);
+    if (inPkg) {
+        updatePackageJsonDep(pkg, depName, 'workspace:*');
+        savePackageJson(projectRoot, pkg);
+    }
     // Update pnpm-workspace.yaml
     const wsRoot = workspaceRoot ?? projectRoot;
     const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] };
@@ -151,7 +208,7 @@ export function switchToLocal(projectRoot, depName, localPath, workspaceRoot) {
     saveWorkspaceYaml(wsRoot, ws);
     // Update vite.config.ts
     updateViteConfig(projectRoot, depName, true);
-    console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}`);
+    console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}${transitiveNote(inPkg)}`);
 }
 // Helper to switch a dependency to GitHub mode
 export function switchToGitHub(projectRoot, depName, depConfig, ref, workspaceRoot) {
@@ -161,31 +218,16 @@ export function switchToGitHub(projectRoot, depName, depConfig, ref, workspaceRo
     const distBranch = depConfig.distBranch ?? 'dist';
     const resolvedRef = ref ?? resolveGitHubRef(depConfig.github, distBranch);
     const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir);
-    const pkg = loadPackageJson(projectRoot);
-    updatePackageJsonDep(pkg, depName, specifier);
-    removePnpmOverride(pkg, depName);
-    savePackageJson(projectRoot, pkg);
-    // Remove from pnpm-workspace.yaml
-    if (depConfig.localPath) {
-        const wsRoot = workspaceRoot ?? projectRoot;
-        const ws = loadWorkspaceYaml(wsRoot);
-        if (ws?.packages) {
-            const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot);
-            ws.packages = ws.packages.filter(p => p !== wsPath);
-            if (workspaceRoot) {
-                saveWorkspaceYaml(wsRoot, ws);
-            }
-            else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-                saveWorkspaceYaml(wsRoot, null);
-            }
-            else {
-                saveWorkspaceYaml(wsRoot, ws);
-            }
-        }
+    if (depConfig.override) {
+        const root = overrideRoot(projectRoot, workspaceRoot);
+        applyOverride(root, depName, specifier);
+        console.log(`Switched ${depName} to GitHub (override): ${specifier}`);
+        return;
     }
-    // Remove from vite.config.ts optimizeDeps.exclude
-    updateViteConfig(projectRoot, depName, false);
-    console.log(`Switched ${depName} to GitHub: ${specifier}`);
+    const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier);
+    // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+    cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot);
+    console.log(`Switched ${depName} to GitHub: ${specifier}${transitiveNote(inPkg)}`);
 }
 // Helper to switch a dependency to GitLab mode
 export function switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRoot) {
@@ -197,34 +239,58 @@ export function switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRo
     // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
     const repoBasename = depConfig.gitlab.split('/').pop();
     const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`;
-    const pkg = loadPackageJson(projectRoot);
-    updatePackageJsonDep(pkg, depName, tarballUrl);
-    removePnpmOverride(pkg, depName);
-    savePackageJson(projectRoot, pkg);
-    // Remove from pnpm-workspace.yaml
-    if (depConfig.localPath) {
-        const wsRoot = workspaceRoot ?? projectRoot;
-        const ws = loadWorkspaceYaml(wsRoot);
-        if (ws?.packages) {
-            const wsPath = workspaceLocalPath(projectRoot, depConfig.localPath, workspaceRoot);
-            ws.packages = ws.packages.filter(p => p !== wsPath);
-            if (workspaceRoot) {
-                saveWorkspaceYaml(wsRoot, ws);
-            }
-            else if (ws.packages.length === 0 || (ws.packages.length === 1 && ws.packages[0] === '.')) {
-                saveWorkspaceYaml(wsRoot, null);
-            }
-            else {
-                saveWorkspaceYaml(wsRoot, ws);
-            }
-        }
+    if (depConfig.override) {
+        const root = overrideRoot(projectRoot, workspaceRoot);
+        applyOverride(root, depName, tarballUrl);
+        console.log(`Switched ${depName} to GitLab (override): ${depConfig.gitlab}@${resolvedRef}`);
+        return;
     }
-    // Remove from vite.config.ts optimizeDeps.exclude
-    updateViteConfig(projectRoot, depName, false);
-    console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}`);
+    const inPkg = applyPackageJsonSpecifier(projectRoot, depName, tarballUrl);
+    // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+    cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot);
+    console.log(`Switched ${depName} to GitLab: ${depConfig.gitlab}@${resolvedRef}${transitiveNote(inPkg)}`);
+}
+// Helper to switch a dependency to pkg.pr.new mode (SHA-pinned continuous release)
+export function switchToPkgPrNew(projectRoot, depName, depConfig, resolvedSha, workspaceRoot) {
+    if (!depConfig.github) {
+        throw new Error(`No GitHub repo configured for ${depName}`);
+    }
+    if (!depConfig.npm) {
+        throw new Error(`No npm package name configured for ${depName}`);
+    }
+    const specifier = makePkgPrNewSpecifier(depConfig.github, depConfig.npm, resolvedSha);
+    if (depConfig.override) {
+        const root = overrideRoot(projectRoot, workspaceRoot);
+        applyOverride(root, depName, specifier);
+        console.log(`Switched ${depName} to pkg.pr.new (override): ${specifier}`);
+        return;
+    }
+    const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier);
+    // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude (same as gh/gl)
+    cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot);
+    console.log(`Switched ${depName} to pkg.pr.new: ${specifier}${transitiveNote(inPkg)}`);
+}
+// Helper to switch a dependency to NPM mode
+export function switchToNpm(projectRoot, depName, depConfig, specifier, workspaceRoot) {
+    if (depConfig.override) {
+        // Pin the whole graph to the published version via override (symmetric with
+        // the other override modes), rather than rewriting the package.json baseline.
+        const root = overrideRoot(projectRoot, workspaceRoot);
+        applyOverride(root, depName, specifier);
+        console.log(`Switched ${depName} to NPM (override): ${specifier}`);
+        return;
+    }
+    const inPkg = applyPackageJsonSpecifier(projectRoot, depName, specifier);
+    // Drop from pnpm-workspace.yaml + vite optimizeDeps.exclude
+    cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot);
+    console.log(`Switched ${depName} to NPM: ${specifier}${transitiveNote(inPkg)}`);
 }
 // Helper to clean up workspace/vite when removing a dep
 export function cleanupDepReferences(projectRoot, depName, depConfig, workspaceRoot) {
+    // Drop any pnpm.overrides entry for override-managed deps
+    if (depConfig.override) {
+        applyOverride(overrideRoot(projectRoot, workspaceRoot), depName, null);
+    }
     // Clean up pnpm-workspace.yaml if the dep was in it
     if (depConfig.localPath) {
         const wsRoot = workspaceRoot ?? projectRoot;

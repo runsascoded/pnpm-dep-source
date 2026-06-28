@@ -1,6 +1,8 @@
 import type { WorkspaceConfig } from './types.js';
 export declare function loadPackageJson(projectRoot: string): Record<string, unknown>;
 export declare function savePackageJson(projectRoot: string, pkg: Record<string, unknown>): void;
+export declare function setPnpmOverride(pkg: Record<string, unknown>, depName: string, specifier: string): void;
+export declare function getPnpmOverride(pkg: Record<string, unknown>, depName: string): string | undefined;
 export declare function removePnpmOverride(pkg: Record<string, unknown>, depName: string): void;
 export declare function updatePackageJsonDep(pkg: Record<string, unknown>, depName: string, specifier: string): void;
 export declare function hasDependency(pkg: Record<string, unknown>, depName: string): boolean;

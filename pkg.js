@@ -15,8 +15,30 @@ export function savePackageJson(projectRoot, pkg) {
     if (pkg.devDependencies) {
         pkg.devDependencies = sortKeys(pkg.devDependencies);
     }
+    const pnpm = pkg.pnpm;
+    if (pnpm?.overrides) {
+        pnpm.overrides = sortKeys(pnpm.overrides);
+    }
     const pkgPath = join(projectRoot, 'package.json');
     writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+}
+export function setPnpmOverride(pkg, depName, specifier) {
+    let pnpm = pkg.pnpm;
+    if (!pnpm) {
+        pnpm = {};
+        pkg.pnpm = pnpm;
+    }
+    let overrides = pnpm.overrides;
+    if (!overrides) {
+        overrides = {};
+        pnpm.overrides = overrides;
+    }
+    overrides[depName] = specifier;
+}
+export function getPnpmOverride(pkg, depName) {
+    const pnpm = pkg.pnpm;
+    const overrides = pnpm?.overrides;
+    return overrides?.[depName];
 }
 export function removePnpmOverride(pkg, depName) {
     const pnpm = pkg.pnpm;
@@ -26,9 +48,12 @@ export function removePnpmOverride(pkg, depName) {
     if (!overrides || !(depName in overrides))
         return;
     delete overrides[depName];
-    // Clean up empty overrides object
+    // Clean up empty overrides object, and the pnpm block if it's now empty too
     if (Object.keys(overrides).length === 0) {
         delete pnpm.overrides;
+        if (Object.keys(pnpm).length === 0) {
+            delete pkg.pnpm;
+        }
     }
 }
 export function updatePackageJsonDep(pkg, depName, specifier) {

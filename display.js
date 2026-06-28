@@ -2,10 +2,12 @@ import { resolve } from 'path';
 import { log } from './log.js';
 import { c } from './constants.js';
 import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
-import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, isCommitReachableAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, } from './remote.js';
+import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, isCommitReachableAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, isNotFoundError, } from './remote.js';
 export function getSourceType(source) {
-    if (source === 'workspace:*' || source === 'local')
+    if (source === 'workspace:*' || source === 'local' || source.startsWith('link:') || source.startsWith('file:'))
         return 'local';
+    if (source.includes('pkg.pr.new'))
+        return 'cr';
     if (source.startsWith('github:') || source.includes('github.com/'))
         return 'github';
     if (source.includes('gitlab.com') && source.includes('/-/archive/'))
@@ -36,8 +38,13 @@ export function formatAheadBehind(ahead, behind) {
         return ` ${c.red}-${b}${c.reset}`;
     return '';
 }
-// Extract the pinned SHA from a GitHub/GitLab source specifier
+// Extract the pinned SHA from a GitHub/GitLab/pkg.pr.new source specifier
 export function extractSourceSha(source) {
+    // pkg.pr.new: https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha> (npm scope also
+    // contains '@', so match the trailing @<hex> only)
+    const crMatch = source.match(/pkg\.pr\.new\/.+@([0-9a-f]+)$/);
+    if (crMatch)
+        return crMatch[1].slice(0, 7);
     // GitHub: github:user/repo#sha or https://github.com/user/repo#sha
     const ghMatch = source.match(/#([a-f0-9]+)$/);
     if (ghMatch)
@@ -124,10 +131,22 @@ export function displayDep(info, verbose = false, remoteVersions) {
             line(label, isActive, repo + subdirSuffix, activeSuffix + distSuffix);
         }
     }
-    if (info.config.github) {
+    // pkg.pr.new derives from github + npm (no dedicated config field), so only
+    // surface it as a line when it's the active source — pinned to its SHA.
+    if (active === 'cr') {
+        const repo = info.config.github ?? '(pkg.pr.new)';
+        line('pkg.pr.new', true, repo, formatActiveSuffix(info));
+    }
+    // Omit the GitHub/GitLab row when the repo isn't installable via that dist
+    // source: recorded at init (`config.noDist`, honored in every mode) or
+    // discovered by the live verbose probe (`versions.*DistMissing`). The active
+    // source is always shown. Mirrors the NPM "no published version" omission below.
+    const ghDistMissing = info.config.noDist || versions?.githubDistMissing;
+    const glDistMissing = info.config.noDist || versions?.gitlabDistMissing;
+    if (info.config.github && (active === 'github' || !ghDistMissing)) {
         showDistLine('GitHub', info.config.github, active === 'github', versions?.github, versions?.githubVersion);
     }
-    if (info.config.gitlab) {
+    if (info.config.gitlab && (active === 'gitlab' || !glDistMissing)) {
         showDistLine('GitLab', info.config.gitlab, active === 'gitlab', versions?.gitlab, versions?.gitlabVersion);
     }
     if (info.config.npm) {
@@ -158,14 +177,16 @@ export function buildGlobalDepInfo(name, dep) {
         config: dep,
     };
 }
-export function buildProjectDepInfo(name, dep, projectRoot, pkg) {
-    const currentSource = getCurrentSource(pkg, name);
+export function buildProjectDepInfo(name, dep, projectRoot, pkg, overrides) {
+    // override-managed deps draw their active source from pnpm.overrides, not the
+    // (static baseline) package.json dep spec.
+    const currentSource = (dep.override ? overrides?.[name] : undefined) ?? getCurrentSource(pkg, name);
     const sourceType = getSourceType(currentSource);
     const devDeps = pkg.devDependencies;
     const isDev = !!(devDeps && name in devDeps);
     const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
     const gitInfo = dep.localPath ? getLocalGitInfo(resolve(projectRoot, dep.localPath)) : null;
-    const committedPkg = getCommittedPackageJson(projectRoot);
+    const committedPkg = dep.override ? null : getCommittedPackageJson(projectRoot);
     const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined;
     const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
         ? committedSrc : undefined;
@@ -196,15 +217,18 @@ export async function buildGlobalDepInfoAsync(name, dep, globalSources) {
         config: dep,
     };
 }
-export async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg) {
-    const currentSource = getCurrentSource(pkg, name);
+export async function buildProjectDepInfoAsync(name, dep, projectRoot, pkg, overrides) {
+    // override-managed deps draw their active source from pnpm.overrides, not the
+    // (static baseline) package.json dep spec.
+    const currentSource = (dep.override ? overrides?.[name] : undefined) ?? getCurrentSource(pkg, name);
     const sourceType = getSourceType(currentSource);
     const devDeps = pkg.devDependencies;
     const isDev = !!(devDeps && name in devDeps);
     const version = sourceType !== 'local' ? (getInstalledVersion(projectRoot, name) ?? undefined) : undefined;
     const gitInfo = dep.localPath ? await getLocalGitInfoAsync(resolve(projectRoot, dep.localPath)) : null;
     // Check if the dep specifier differs from what's committed
-    const committedPkg = getCommittedPackageJson(projectRoot);
+    // Check if the dep specifier differs from what's committed
+    const committedPkg = dep.override ? null : getCommittedPackageJson(projectRoot);
     const committedSrc = committedPkg ? getCurrentSource(committedPkg, name) : undefined;
     const committedSource = committedSrc && committedSrc !== currentSource && committedSrc !== '(not found)'
         ? committedSrc : undefined;
@@ -230,12 +254,25 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
             return undefined;
         });
     }
-    const [npmInfo, ghSha, ghPkg, glSha, glPkg, committedPkg] = await Promise.all([
+    // Resolve a dist-branch ref, distinguishing "branch doesn't exist" (not
+    // installable via that source — drives row omission) from transient failures.
+    function probeRef(label, p) {
+        return p.then((sha) => ({ sha }), (err) => {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.debug(`${depName}: ${label}: ${msg}`);
+            return { missing: isNotFoundError(msg) };
+        });
+    }
+    // `noDist` (recorded at init) means the repo has no dist branch — skip the
+    // dist ref/package.json probes entirely (no API call, no row).
+    const probeGh = !!dep.github && !dep.noDist;
+    const probeGl = !!dep.gitlab && !dep.noDist;
+    const [npmInfo, ghRef, ghPkg, glRef, glPkg, committedPkg] = await Promise.all([
         getNpmInfoAsync(npmName),
-        dep.github ? catchLog('GitHub ref', resolveGitHubRefAsync(dep.github, distBranch)) : undefined,
-        dep.github ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github, distBranch)) : undefined,
-        dep.gitlab ? catchLog('GitLab ref', resolveGitLabRefAsync(dep.gitlab, distBranch)) : undefined,
-        dep.gitlab ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab, distBranch)) : undefined,
+        probeGh ? probeRef('GitHub ref', resolveGitHubRefAsync(dep.github, distBranch)) : undefined,
+        probeGh ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github, distBranch)) : undefined,
+        probeGl ? probeRef('GitLab ref', resolveGitLabRefAsync(dep.gitlab, distBranch)) : undefined,
+        probeGl ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab, distBranch)) : undefined,
         // Fetch package.json from the committed dist SHA to get its version/source info
         committedDistSha && dep.github
             ? catchLog('GitHub committed pkg', fetchGitHubPackageJsonAsync(dep.github, committedDistSha))
@@ -244,6 +281,8 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
                 : undefined,
     ]);
     const npmVersion = npmInfo?.version;
+    const ghSha = ghRef?.sha;
+    const glSha = glRef?.sha;
     const latestDistVersion = (ghPkg?.version ?? glPkg?.version);
     const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined;
     const rawPinnedSourceSha = pinnedVersion ? parseDistSourceSha(pinnedVersion) : undefined;
@@ -332,8 +371,10 @@ export async function fetchRemoteVersionsAsync(dep, depName, localPath, pinnedVe
         npmSourceSha,
         github: ghSha ? ghSha.slice(0, 7) : undefined,
         githubVersion: ghPkg?.version,
+        githubDistMissing: (dep.github && (dep.noDist || ghRef?.missing)) || undefined,
         gitlab: glSha ? glSha.slice(0, 7) : undefined,
         gitlabVersion: glPkg?.version,
+        gitlabDistMissing: (dep.gitlab && (dep.noDist || glRef?.missing)) || undefined,
         committedDistSha,
         committedDistVersion,
         localAheadOfPinned,
@@ -351,24 +392,36 @@ export function fetchRemoteVersions(dep, depName) {
         result.npm = getLatestNpmVersion(npmName);
     }
     catch { }
-    if (dep.github) {
+    if (dep.github && dep.noDist) {
+        result.githubDistMissing = true;
+    }
+    else if (dep.github) {
         try {
             const sha = resolveGitHubRef(dep.github, distBranch);
             result.github = sha.slice(0, 7);
         }
-        catch { }
+        catch (err) {
+            if (isNotFoundError(err instanceof Error ? err.message : String(err)))
+                result.githubDistMissing = true;
+        }
         try {
             const pkg = fetchGitHubPackageJson(dep.github, distBranch);
             result.githubVersion = pkg.version;
         }
         catch { }
     }
-    if (dep.gitlab) {
+    if (dep.gitlab && dep.noDist) {
+        result.gitlabDistMissing = true;
+    }
+    else if (dep.gitlab) {
         try {
             const sha = resolveGitLabRef(dep.gitlab, distBranch);
             result.gitlab = sha.slice(0, 7);
         }
-        catch { }
+        catch (err) {
+            if (isNotFoundError(err instanceof Error ? err.message : String(err)))
+                result.gitlabDistMissing = true;
+        }
         try {
             const pkg = fetchGitLabPackageJson(dep.gitlab, distBranch);
             result.gitlabVersion = pkg.version;
