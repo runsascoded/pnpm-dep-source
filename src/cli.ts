@@ -237,7 +237,9 @@ function initOne(
     console.log(`  Dist branch: ${options.distBranch}`)
 
     if (localPath) {
-      runGlobalInstall(`file:${localPath}`)
+      // link: (live symlink) rather than file: (copy), so a global install of a
+      // dep under active development reflects rebuilds without reinstalling.
+      runGlobalInstall(`link:${localPath}`)
       console.log(`Installed ${pkgName} globally from local: ${localPath}`)
     }
     return false
@@ -784,7 +786,8 @@ program
         if (!depConfig.localPath) {
           throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`)
         }
-        runGlobalInstall(`file:${depConfig.localPath}`)
+        // link: (live symlink) rather than file: (copy) — see initOne note.
+        runGlobalInstall(`link:${depConfig.localPath}`)
         console.log(`Installed ${depName} globally from local: ${depConfig.localPath}`)
       })
       return

@@ -495,8 +495,8 @@ export function parseGlobalPkgSource(
   const resolved = pkg.resolved || ''
   const pkgPath = pkg.path || ''
 
-  // Local file install: version is "file:..." path
-  if (version.startsWith('file:')) {
+  // Local install: version is "file:..." (copy) or "link:..." (live symlink) path
+  if (version.startsWith('file:') || version.startsWith('link:')) {
     const filePath = version.slice(5)
     const absPath = globalDir ? resolve(globalDir, filePath) : filePath
     return { source: 'local', specifier: absPath }
