@@ -461,6 +461,8 @@ The tool stores configuration in `.pds.json` (also supports `.pnpm-dep-source.js
 
 The `subdir` field is optional and auto-detected during `init` for monorepo packages. The `override` field is optional — when `true`, `pds` manages the dep through `pnpm.overrides` instead of the `package.json` dep spec (see [Override strategy](#override-strategy--o--override)).
 
+`distBranch` (default `"dist"`) names the branch where built tarballs live, for `gh`/`gl`/`git` (dist-tarball) mode. `init` probes it: if the repo resolves but has no such branch — e.g. a fork that ships via pkg.pr.new (`cr`) rather than npm-dist — `pds` records `"noDist": true` instead (and drops `distBranch`). A `noDist` dep skips the dist probe and omits its `GitHub:`/`GitLab:` row from `ls`/`status` in all modes (it's not installable that way). Re-`init` to refresh if the repo later gains a dist branch. A missing/typo'd repo (bare 404) is *not* marked `noDist`.
+
 Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default), `"pre-commit"`, or `"none"` to disable. The legacy `"skipCheck": true` is still supported (treated as `"checkOn": "none"`).
 
 ## Options

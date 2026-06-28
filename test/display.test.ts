@@ -250,6 +250,87 @@ describe('displayDep', () => {
     ])
   })
 
+  it('omits the GitHub row in verbose mode when the dist branch is missing (not active)', () => {
+    // slidev-style fork: github repo configured (for pkg.pr.new derivation) but no
+    // `dist` branch, so it's not installable via gh/git mode — omit the row.
+    const info = mkInfo({
+      sourceType: 'cr',
+      currentSource: 'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567',
+      version: '52.16.0',
+      config: { localPath: '../slidev', github: 'Open-Athena/slidev', npm: '@slidev/cli' },
+      gitInfo: { sha: 'abc1234', dirty: false },
+    })
+    const versions: RemoteVersions = {
+      npm: '52.16.0',
+      githubDistMissing: true,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../slidev (abc1234)',
+      '* pkg.pr.new: Open-Athena/slidev (abcdef1; 52.16.0)',
+      '  NPM: @slidev/cli (latest: 52.16.0)',
+    ])
+  })
+
+  it('keeps the GitHub row in non-verbose mode even when the dist branch is missing', () => {
+    // Non-verbose doesn't probe, so the configured source is shown structurally.
+    const info = mkInfo({
+      sourceType: 'cr',
+      currentSource: 'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567',
+      version: '52.16.0',
+      config: { localPath: '../slidev', github: 'Open-Athena/slidev', npm: '@slidev/cli' },
+      gitInfo: { sha: 'abc1234', dirty: false },
+    })
+    displayDep(info)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../slidev (abc1234)',
+      '* pkg.pr.new: Open-Athena/slidev (abcdef1; 52.16.0)',
+      '  GitHub: Open-Athena/slidev',
+      '  NPM: @slidev/cli',
+    ])
+  })
+
+  it('omits the GitHub row in non-verbose mode when config.noDist is set', () => {
+    // noDist is recorded at init, so even the non-probing non-verbose listing
+    // can drop the dead row.
+    const info = mkInfo({
+      sourceType: 'cr',
+      currentSource: 'https://pkg.pr.new/Open-Athena/slidev/@slidev/cli@abcdef1234567',
+      version: '52.16.0',
+      config: { localPath: '../slidev', github: 'Open-Athena/slidev', npm: '@slidev/cli', noDist: true },
+      gitInfo: { sha: 'abc1234', dirty: false },
+    })
+    displayDep(info)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../slidev (abc1234)',
+      '* pkg.pr.new: Open-Athena/slidev (abcdef1; 52.16.0)',
+      '  NPM: @slidev/cli',
+    ])
+  })
+
+  it('keeps the GitHub row when it is the active source despite a missing flag', () => {
+    const info = mkInfo({
+      sourceType: 'github',
+      currentSource: 'https://github.com/user/repo#abcdef1',
+      version: '1.0.0-dist.abc1234',
+      config: { localPath: '../my-dep', github: 'user/repo' },
+    })
+    const versions: RemoteVersions = {
+      github: 'abcdef1',
+      githubVersion: '1.0.0-dist.abc1234',
+      githubDistMissing: true,
+    }
+    displayDep(info, true, versions)
+    expect(logs).toEqual([
+      'test-dep:',
+      '  Local: ../my-dep',
+      '* GitHub: user/repo (abcdef1; 1.0.0-dist.abc1234)',
+    ])
+  })
+
   it('shows github active with same pinned/latest (single line)', () => {
     const info = mkInfo({
       sourceType: 'github',

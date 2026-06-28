@@ -19,7 +19,7 @@ import {
   getLatestNpmVersion, npmPackageExists,
   getLocalPackageInfo, getRemotePackageInfo, isRepoUrl,
   getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync,
-  pkgPrNewBuildExists,
+  pkgPrNewBuildExists, isMissingRef,
 } from './remote.js'
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
 import { detectFleet, type FleetDetection } from './fleet.js'
@@ -134,6 +134,32 @@ type InitOptions = {
   source?: string
 }
 
+// Probe the configured repo's dist branch once, at init, to record the dep's
+// "style": a repo with no dist branch (e.g. a fork that ships via pkg.pr.new)
+// isn't installable via gh/gl/git tarball mode, so we mark `noDist` and drop the
+// (now-meaningless) `distBranch`. Returns the dist-related config fields to spread
+// onto the dep. Transient/unknown failures fall through to the default (no mark),
+// leaving the live verbose probe to decide later.
+function detectDistStyle(
+  github: string | undefined,
+  gitlab: string | undefined,
+  distBranch: string,
+): { distBranch?: string; noDist?: boolean } {
+  const repo = github ?? gitlab
+  if (!repo) return { distBranch }
+  try {
+    if (github) resolveGitHubRef(github, distBranch)
+    else resolveGitLabRef(gitlab!, distBranch)
+    return { distBranch }
+  } catch (err) {
+    if (isMissingRef(err instanceof Error ? err.message : String(err))) {
+      console.log(`  No '${distBranch}' branch on ${repo}; marking noDist (gh/gl tarball mode unavailable)`)
+      return { noDist: true }
+    }
+    return { distBranch }
+  }
+}
+
 // Per-arg init logic. Returns true when a project-mode install is needed (a
 // project dep was activated). The trailing `pnpm install` is fired once by
 // the outer loop, not per-call.
@@ -216,6 +242,8 @@ function initOne(
     }
   }
 
+  const distStyle = detectDistStyle(github, gitlab, options.distBranch)
+
   if (isGlobal) {
     const config = loadGlobalConfig()
     config.dependencies[pkgName] = {
@@ -223,7 +251,7 @@ function initOne(
       github,
       gitlab,
       npm: npmName,
-      distBranch: options.distBranch,
+      ...distStyle,
       subdir,
       override: options.override || undefined,
     }
@@ -234,7 +262,7 @@ function initOne(
     if (gitlab) console.log(`  GitLab: ${gitlab}`)
     if (subdir) console.log(`  Subdir: ${subdir}`)
     if (npmName) console.log(`  NPM: ${npmName}`)
-    console.log(`  Dist branch: ${options.distBranch}`)
+    if (distStyle.distBranch) console.log(`  Dist branch: ${distStyle.distBranch}`)
 
     if (localPath) {
       // link: (live symlink) rather than file: (copy), so a global install of a
@@ -253,7 +281,7 @@ function initOne(
     github,
     gitlab,
     npm: npmName,
-    distBranch: options.distBranch,
+    ...distStyle,
     subdir,
     override: options.override || undefined,
   }
@@ -266,7 +294,7 @@ function initOne(
   if (gitlab) console.log(`  GitLab: ${gitlab}`)
   if (subdir) console.log(`  Subdir: ${subdir}`)
   if (npmName) console.log(`  NPM: ${npmName}`)
-  console.log(`  Dist branch: ${options.distBranch}`)
+  if (distStyle.distBranch) console.log(`  Dist branch: ${distStyle.distBranch}`)
 
   const pkg = loadPackageJson(projectRoot!)
   const needsAdd = !hasDependency(pkg, pkgName)
@@ -351,7 +379,7 @@ function registerFleet(
       github: m.github,
       gitlab: m.gitlab,
       npm: m.npm,
-      distBranch: options.distBranch,
+      ...detectDistStyle(m.github, m.gitlab, options.distBranch),
       subdir: m.subdir,
       override: useOverride || undefined,
     }

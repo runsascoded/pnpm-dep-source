@@ -6,6 +6,22 @@ import type { PackageInfo } from './types.js'
 import { spawnAsync } from './process.js'
 import { log, getConfiguredRetries } from './log.js'
 
+// Deterministic "this ref/resource doesn't exist" responses from gh/glab.
+// Retrying won't help, and for forks that publish via pkg.pr.new (no `dist`
+// branch) a missing dist ref is an expected, handled condition — not a failure
+// worth warning about.
+export function isNotFoundError(msg: string): boolean {
+  return /\bHTTP (404|422)\b|No commit found|404 Not Found/i.test(msg)
+}
+
+// Narrower than isNotFoundError: the *ref/branch* is absent though the repo
+// itself resolved (gh says "No commit found for the ref …"; glab "Commit Not
+// Found"). Used at init to mark `noDist` — so a typo'd or nonexistent repo (a
+// bare "Not Found") is NOT mistaken for "exists but has no dist branch".
+export function isMissingRef(msg: string): boolean {
+  return /No commit found|Commit Not Found/i.test(msg)
+}
+
 async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
   const maxRetries = getConfiguredRetries()
   let lastErr: unknown
@@ -15,6 +31,12 @@ async function withRetry<T>(label: string, fn: () => Promise<T>): Promise<T> {
     } catch (err) {
       lastErr = err
       const msg = err instanceof Error ? err.message : String(err)
+      if (isNotFoundError(msg)) {
+        // Definitive absence: don't retry, don't warn (expected for repos
+        // lacking the probed ref/branch). Surface at debug for diagnosis.
+        log.debug(`${label}: not found: ${msg}`)
+        break
+      }
       if (attempt < maxRetries) {
         log.debug(`${label}: attempt ${attempt + 1} failed (${msg}), retrying...`)
       } else if (maxRetries > 0) {

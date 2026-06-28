@@ -4,6 +4,10 @@ export interface DepConfig {
   gitlab?: string       // e.g. "runsascoded/js/screenshots"
   npm?: string          // e.g. "use-kbd" (defaults to package name from local)
   distBranch?: string   // defaults to "dist"
+  noDist?: boolean      // the github/gitlab repo has no dist branch (discovered at
+                        // init): not installable via gh/gl/git tarball mode, so the
+                        // dist row is omitted and the dist probe skipped. Forks that
+                        // ship via pkg.pr.new (cr) are the common case.
   subdir?: string       // e.g. "/packages/client" for monorepo subdirectory
   override?: boolean    // manage via pnpm.overrides (force whole graph, incl.
                         // transitive monorepo siblings) instead of rewriting the
@@ -47,6 +51,8 @@ export type RemoteVersions = {
   npm?: string; npmSourceSha?: string
   github?: string; githubVersion?: string
   gitlab?: string; gitlabVersion?: string
+  githubDistMissing?: boolean   // GitHub dist branch doesn't exist (not installable via gh/git mode)
+  gitlabDistMissing?: boolean   // GitLab dist branch doesn't exist (not installable via gl/git mode)
   committedDistSha?: string     // dist SHA from committed (HEAD) package.json
   committedDistVersion?: string // version from committed dist SHA's package.json
   localAheadOfPinned?: number   // commits in local HEAD not in pinned source

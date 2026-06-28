@@ -105,6 +105,29 @@ direct dep (safe26 now lists `vite` in `devDependencies`). This is strictly more
 correct (explicit deps); deps consumed only *through* the linked package still
 resolve via that package's own tree.
 
+### `noDist`: forks with no dist branch omit the gh/gl row
+
+The slidev fork ships built packages via **pkg.pr.new** (`cr`), not an npm-dist
+`dist` branch. So `@slidev/*`'s `github` field exists only to derive pkg.pr.new
+URLs — the repo isn't installable via `gh`/`gl`/`git` (dist-tarball) mode, and the
+`GitHub:` row + `…@dist` probe in `ls`/`status` were dead weight (and emitted
+`404`/`422` warnings).
+
+`init` now probes the configured repo's dist branch and records the dep's *style*:
+when the repo resolves but the branch is absent (gh: "No commit found for the
+ref …"), it writes `"noDist": true` (dropping `distBranch`). `isMissingRef`
+distinguishes this from a bare 404 (typo'd / nonexistent repo), which is **not**
+marked. A `noDist` dep:
+
+- skips the dist ref/`package.json` probe entirely (no API call, no warning), and
+- omits its `GitHub:`/`GitLab:` row from `ls`/`status` in **all** modes (the
+  config marker is honored without a probe, so non-verbose is consistent too).
+
+A live verbose probe still omits the row for un-migrated deps (`*DistMissing`
+flags), and `withRetry` downgrades not-found (404/422) to `debug` so the dist
+warnings are gone regardless. `safe26`'s four `@slidev/*` deps carry `noDist:
+true`. Re-`init` refreshes the marker if a repo later gains a dist branch.
+
 ## Populating `override` with less friction (implemented)
 
 Three layered ways to set up an override-managed fleet, so the consumer needn't

@@ -14,6 +14,7 @@ import {
   fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync,
   getLatestNpmVersion,
   getNpmInfoAsync, baseVersion,
+  isNotFoundError,
 } from './remote.js'
 
 export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown' {
@@ -155,10 +156,16 @@ export function displayDep(
     const repo = info.config.github ?? '(pkg.pr.new)'
     line('pkg.pr.new', true, repo, formatActiveSuffix(info))
   }
-  if (info.config.github) {
+  // Omit the GitHub/GitLab row when the repo isn't installable via that dist
+  // source: recorded at init (`config.noDist`, honored in every mode) or
+  // discovered by the live verbose probe (`versions.*DistMissing`). The active
+  // source is always shown. Mirrors the NPM "no published version" omission below.
+  const ghDistMissing = info.config.noDist || versions?.githubDistMissing
+  const glDistMissing = info.config.noDist || versions?.gitlabDistMissing
+  if (info.config.github && (active === 'github' || !ghDistMissing)) {
     showDistLine('GitHub', info.config.github, active === 'github', versions?.github, versions?.githubVersion)
   }
-  if (info.config.gitlab) {
+  if (info.config.gitlab && (active === 'gitlab' || !glDistMissing)) {
     showDistLine('GitLab', info.config.gitlab, active === 'gitlab', versions?.gitlab, versions?.gitlabVersion)
   }
   if (info.config.npm) {
@@ -302,12 +309,28 @@ export async function fetchRemoteVersionsAsync(
       return undefined
     })
   }
-  const [npmInfo, ghSha, ghPkg, glSha, glPkg, committedPkg] = await Promise.all([
+  // Resolve a dist-branch ref, distinguishing "branch doesn't exist" (not
+  // installable via that source — drives row omission) from transient failures.
+  function probeRef(label: string, p: Promise<string>): Promise<{ sha?: string; missing?: boolean }> {
+    return p.then(
+      (sha) => ({ sha }),
+      (err) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.debug(`${depName}: ${label}: ${msg}`)
+        return { missing: isNotFoundError(msg) }
+      },
+    )
+  }
+  // `noDist` (recorded at init) means the repo has no dist branch — skip the
+  // dist ref/package.json probes entirely (no API call, no row).
+  const probeGh = !!dep.github && !dep.noDist
+  const probeGl = !!dep.gitlab && !dep.noDist
+  const [npmInfo, ghRef, ghPkg, glRef, glPkg, committedPkg] = await Promise.all([
     getNpmInfoAsync(npmName),
-    dep.github ? catchLog('GitHub ref', resolveGitHubRefAsync(dep.github, distBranch)) : undefined,
-    dep.github ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github, distBranch)) : undefined,
-    dep.gitlab ? catchLog('GitLab ref', resolveGitLabRefAsync(dep.gitlab, distBranch)) : undefined,
-    dep.gitlab ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab, distBranch)) : undefined,
+    probeGh ? probeRef('GitHub ref', resolveGitHubRefAsync(dep.github!, distBranch)) : undefined,
+    probeGh ? catchLog('GitHub pkg', fetchGitHubPackageJsonAsync(dep.github!, distBranch)) : undefined,
+    probeGl ? probeRef('GitLab ref', resolveGitLabRefAsync(dep.gitlab!, distBranch)) : undefined,
+    probeGl ? catchLog('GitLab pkg', fetchGitLabPackageJsonAsync(dep.gitlab!, distBranch)) : undefined,
     // Fetch package.json from the committed dist SHA to get its version/source info
     committedDistSha && dep.github
       ? catchLog('GitHub committed pkg', fetchGitHubPackageJsonAsync(dep.github, committedDistSha))
@@ -316,6 +339,8 @@ export async function fetchRemoteVersionsAsync(
         : undefined,
   ])
   const npmVersion = npmInfo?.version
+  const ghSha = ghRef?.sha
+  const glSha = glRef?.sha
 
   const latestDistVersion = (ghPkg?.version ?? glPkg?.version) as string | undefined
   const latestDistSourceSha = latestDistVersion ? parseDistSourceSha(latestDistVersion) : undefined
@@ -402,8 +427,10 @@ export async function fetchRemoteVersionsAsync(
     npmSourceSha,
     github: ghSha ? ghSha.slice(0, 7) : undefined,
     githubVersion: ghPkg?.version as string | undefined,
+    githubDistMissing: (dep.github && (dep.noDist || ghRef?.missing)) || undefined,
     gitlab: glSha ? glSha.slice(0, 7) : undefined,
     gitlabVersion: glPkg?.version as string | undefined,
+    gitlabDistMissing: (dep.gitlab && (dep.noDist || glRef?.missing)) || undefined,
     committedDistSha,
     committedDistVersion,
     localAheadOfPinned,
@@ -423,22 +450,30 @@ export function fetchRemoteVersions(dep: DepConfig, depName: string): RemoteVers
     result.npm = getLatestNpmVersion(npmName)
   } catch {}
 
-  if (dep.github) {
+  if (dep.github && dep.noDist) {
+    result.githubDistMissing = true
+  } else if (dep.github) {
     try {
       const sha = resolveGitHubRef(dep.github, distBranch)
       result.github = sha.slice(0, 7)
-    } catch {}
+    } catch (err) {
+      if (isNotFoundError(err instanceof Error ? err.message : String(err))) result.githubDistMissing = true
+    }
     try {
       const pkg = fetchGitHubPackageJson(dep.github, distBranch)
       result.githubVersion = pkg.version as string | undefined
     } catch {}
   }
 
-  if (dep.gitlab) {
+  if (dep.gitlab && dep.noDist) {
+    result.gitlabDistMissing = true
+  } else if (dep.gitlab) {
     try {
       const sha = resolveGitLabRef(dep.gitlab, distBranch)
       result.gitlab = sha.slice(0, 7)
-    } catch {}
+    } catch (err) {
+      if (isNotFoundError(err instanceof Error ? err.message : String(err))) result.gitlabDistMissing = true
+    }
     try {
       const pkg = fetchGitLabPackageJson(dep.gitlab, distBranch)
       result.gitlabVersion = pkg.version as string | undefined
