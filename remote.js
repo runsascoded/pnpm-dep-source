@@ -17,6 +17,16 @@ export function isNotFoundError(msg) {
 export function isMissingRef(msg) {
     return /No commit found|Commit Not Found/i.test(msg);
 }
+// Credential failures from gh/glab/npm (expired/revoked tokens, not logged in).
+// Deterministic — retrying won't help — and, unlike a missing ref, worth a single
+// concise heads-up so the user can re-auth, rather than the raw multi-line blob
+// repeated per probe.
+export function isAuthError(msg) {
+    return /invalid_grant|\bHTTP 401\b|\b401 Unauthorized\b|could not authenticate|not logged ?in|authentication (failed|required)|ENEEDAUTH|bad credentials/i.test(msg);
+}
+// Auth failures already warned about this process, keyed by host label, so the
+// same expired token doesn't spam once per probe within a single command.
+const warnedAuthHosts = new Set();
 async function withRetry(label, fn) {
     const maxRetries = getConfiguredRetries();
     let lastErr;
@@ -31,6 +41,20 @@ async function withRetry(label, fn) {
                 // Definitive absence: don't retry, don't warn (expected for repos
                 // lacking the probed ref/branch). Surface at debug for diagnosis.
                 log.debug(`${label}: not found: ${msg}`);
+                break;
+            }
+            if (isAuthError(msg)) {
+                // Deterministic: don't retry. Warn once per host (concise, single line),
+                // then debug for the rest — the user just needs to re-auth once.
+                const host = label.split(/[\s:]/)[0];
+                if (warnedAuthHosts.has(host)) {
+                    log.debug(`${label}: auth failed: ${msg}`);
+                }
+                else {
+                    warnedAuthHosts.add(host);
+                    const oneLine = msg.replace(/\s+/g, ' ').trim().slice(0, 160);
+                    log.warn(`${host}: authentication failed — remote probes skipped (${oneLine})`);
+                }
                 break;
             }
             if (attempt < maxRetries) {
@@ -440,8 +464,10 @@ export function getNpmInfoAsync(packageName) {
         return cached;
     const promise = withRetry(`npm info ${packageName}`, async () => {
         const resp = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}`);
+        // "HTTP <status>" so a 404 (package not published — an expected state for a
+        // local/gh-only dep) is classified as not-found: silent, no retry.
         if (!resp.ok)
-            throw new Error(`npm registry returned ${resp.status}`);
+            throw new Error(`npm registry returned HTTP ${resp.status}`);
         const data = await resp.json();
         const distTags = data['dist-tags'];
         const version = distTags?.latest ?? data.version;

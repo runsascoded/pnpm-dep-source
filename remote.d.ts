@@ -1,6 +1,7 @@
 import type { PackageInfo } from './types.js';
 export declare function isNotFoundError(msg: string): boolean;
 export declare function isMissingRef(msg: string): boolean;
+export declare function isAuthError(msg: string): boolean;
 export declare function getLocalGitInfo(localPath: string): {
     sha: string;
     dirty: boolean;
