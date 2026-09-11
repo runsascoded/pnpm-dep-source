@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseGlobalPkgSource, isNotFoundError, isMissingRef } from '../src/remote.js'
+import { parseGlobalPkgSource, isNotFoundError, isMissingRef, isAuthError } from '../src/remote.js'
 
 const GLOBAL_DIR = '/g/nm'
 
@@ -49,6 +49,32 @@ describe('isNotFoundError', () => {
   })
   it('does not match a network error', () => {
     expect(isNotFoundError('connect ETIMEDOUT api.github.com:443')).toBe(false)
+  })
+  it('matches an unpublished npm package (registry HTTP 404)', () => {
+    expect(isNotFoundError('npm registry returned HTTP 404')).toBe(true)
+  })
+  it('does not match a transient npm registry 503', () => {
+    expect(isNotFoundError('npm registry returned HTTP 503')).toBe(false)
+  })
+})
+
+describe('isAuthError', () => {
+  it('matches a GitLab expired-token OAuth error', () => {
+    expect(isAuthError('Failed to resolve GitLab ref "dist" for r/js/scrns: ERROR Oauth2: "invalid_grant" "The provided authorization grant is invalid, expired, revoked, ..."')).toBe(true)
+  })
+  it('matches an HTTP 401 / bad credentials', () => {
+    expect(isAuthError('gh: HTTP 401 Bad credentials')).toBe(true)
+    expect(isAuthError('401 Unauthorized')).toBe(true)
+  })
+  it('matches a "not logged in" / ENEEDAUTH', () => {
+    expect(isAuthError('glab: not logged in to gitlab.com')).toBe(true)
+    expect(isAuthError('npm error code ENEEDAUTH')).toBe(true)
+  })
+  it('does NOT match a not-found', () => {
+    expect(isAuthError('No commit found for the ref dist (HTTP 404)')).toBe(false)
+  })
+  it('does NOT match a transient network error', () => {
+    expect(isAuthError('connect ETIMEDOUT gitlab.com:443')).toBe(false)
   })
 })
 
