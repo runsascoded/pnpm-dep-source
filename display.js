@@ -1,10 +1,10 @@
 import { resolve } from 'path';
 import { log } from './log.js';
 import { c } from './constants.js';
-import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js';
+import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion, isLocalSpecifier } from './pkg.js';
 import { getLocalGitInfo, getLocalGitInfoAsync, getGlobalInstallSource, parseDistSourceSha, gitRevListCountAsync, isCommitReachableAsync, resolveVersionTagAsync, resolveGitHubRef, resolveGitLabRef, resolveGitHubRefAsync, resolveGitLabRefAsync, fetchGitHubPackageJson, fetchGitLabPackageJson, fetchGitHubPackageJsonAsync, fetchGitLabPackageJsonAsync, getLatestNpmVersion, getNpmInfoAsync, baseVersion, isNotFoundError, } from './remote.js';
 export function getSourceType(source) {
-    if (source === 'workspace:*' || source === 'local' || source.startsWith('link:') || source.startsWith('file:'))
+    if (source === 'local' || isLocalSpecifier(source))
         return 'local';
     if (source.includes('pkg.pr.new'))
         return 'cr';

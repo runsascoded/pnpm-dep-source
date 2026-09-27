@@ -95,6 +95,10 @@ export function removeDependency(pkg, depName) {
     }
     return false;
 }
+/** A package.json specifier pointing at a local checkout (`pds l`, or a link/file install). */
+export function isLocalSpecifier(spec) {
+    return spec === 'workspace:*' || spec.startsWith('link:') || spec.startsWith('file:');
+}
 export function getCurrentSource(pkg, depName) {
     const deps = pkg.dependencies;
     const devDeps = pkg.devDependencies;

@@ -1,6 +1,7 @@
 import type { DepConfig } from './types.js';
+import { type ViteEditStatus } from './vite-config.js';
 export declare function makeLinkSpecifier(projectRoot: string, root: string, localPath: string): string;
-export declare function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): void;
+export declare function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): ViteEditStatus | undefined;
 export declare function makeGitHubSpecifier(repo: string, ref: string, subdir?: string): string;
 export declare function makePkgPrNewSpecifier(repo: string, npm: string, sha: string): string;
 export declare function switchToLocal(projectRoot: string, depName: string, depConfig: DepConfig, workspaceRoot?: string | null): void;

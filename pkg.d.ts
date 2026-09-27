@@ -8,6 +8,8 @@ export declare function updatePackageJsonDep(pkg: Record<string, unknown>, depNa
 export declare function hasDependency(pkg: Record<string, unknown>, depName: string): boolean;
 export declare function addDependency(pkg: Record<string, unknown>, depName: string, specifier: string, isDev: boolean): void;
 export declare function removeDependency(pkg: Record<string, unknown>, depName: string): boolean;
+/** A package.json specifier pointing at a local checkout (`pds l`, or a link/file install). */
+export declare function isLocalSpecifier(spec: string): boolean;
 export declare function getCurrentSource(pkg: Record<string, unknown>, depName: string): string;
 export declare function getCommittedPackageJson(projectRoot: string): Record<string, unknown> | null;
 export declare function getInstalledVersion(projectRoot: string, depName: string): string | null;

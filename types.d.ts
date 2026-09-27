@@ -7,6 +7,7 @@ export interface DepConfig {
     noDist?: boolean;
     subdir?: string;
     override?: boolean;
+    keepViteExclude?: boolean;
 }
 export interface Config {
     dependencies: Record<string, DepConfig>;

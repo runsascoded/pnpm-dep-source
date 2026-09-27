@@ -2,9 +2,12 @@ import { execSync } from 'child_process';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { c } from './constants.js';
-import { loadPackageJson, savePackageJson, updatePackageJsonDep, setPnpmOverride, removePnpmOverride, hasDependency, loadWorkspaceYaml, saveWorkspaceYaml, } from './pkg.js';
+import { loadPackageJson, savePackageJson, updatePackageJsonDep, setPnpmOverride, removePnpmOverride, hasDependency, loadWorkspaceYaml, saveWorkspaceYaml, getCurrentSource, isLocalSpecifier, } from './pkg.js';
+import { loadConfig, saveConfig } from './config.js';
 import { resolveGitHubRef, resolveGitLabRef } from './remote.js';
 import { workspaceLocalPath } from './project.js';
+import { log } from './log.js';
+import { addOptimizeDepsExclude, removeOptimizeDepsExclude } from './vite-config.js';
 // pnpm.overrides live at the workspace root (the dir holding pnpm-workspace.yaml,
 // or the single-package project root). `override`-managed deps force the WHOLE
 // graph — including transitive monorepo siblings — to a single source, which the
@@ -26,124 +29,39 @@ function applyOverride(root, depName, specifier) {
 export function makeLinkSpecifier(projectRoot, root, localPath) {
     return `link:${relative(root, resolve(projectRoot, localPath))}`;
 }
+const VITE_CONFIGS = ['vite.config.ts', 'vite.config.mts', 'vite.config.js', 'vite.config.mjs'];
+// Add/remove `depName` in `optimizeDeps.exclude` (local deps must be excluded
+// from pre-bundling so edits hot-reload). See `vite-config.ts`.
 export function updateViteConfig(projectRoot, depName, exclude) {
-    const vitePath = join(projectRoot, 'vite.config.ts');
-    if (!existsSync(vitePath)) {
-        return;
-    }
+    const name = VITE_CONFIGS.find(f => existsSync(join(projectRoot, f)));
+    if (!name)
+        return undefined;
+    const vitePath = join(projectRoot, name);
     const content = readFileSync(vitePath, 'utf-8');
-    const quoted = `'${depName}'`;
-    if (exclude) {
-        // Add depName to optimizeDeps.exclude
-        if (content.includes(quoted) && content.includes('optimizeDeps')) {
-            // Check if already in exclude array
-            const excludeMatch = content.match(/exclude:\s*\[([^\]]*)\]/s);
-            if (excludeMatch && excludeMatch[1].includes(quoted))
-                return;
-        }
-        // Detect indentation from the file (horizontal whitespace only)
-        const indentMatch = content.match(/\n([ \t]+)\S/);
-        const indent = indentMatch?.[1] ?? '  ';
-        const i2 = indent + indent;
-        // Try to insert into existing optimizeDeps block
-        const existingOptRe = /(\boptimizeDeps:\s*\{[^}]*)(})/;
-        const existingOptMatch = content.match(existingOptRe);
-        if (existingOptMatch) {
-            // Has optimizeDeps but maybe no exclude, or exclude without this dep
-            const existingExcludeRe = /(exclude:\s*\[)([^\]]*)(])/s;
-            const innerMatch = existingOptMatch[0].match(existingExcludeRe);
-            if (innerMatch) {
-                // Add to existing exclude array
-                if (innerMatch[2].includes(quoted))
-                    return;
-                const items = innerMatch[2].trim();
-                const newItems = items ? `${items}, ${quoted}` : quoted;
-                const updated = content.replace(existingExcludeRe, `$1${newItems}$3`);
-                writeFileSync(vitePath, updated);
-            }
-            else {
-                // Has optimizeDeps but no exclude — add exclude inside it
-                const updated = content.replace(existingOptRe, `$1${i2}exclude: [${quoted}],\n${indent}$2`);
-                writeFileSync(vitePath, updated);
-            }
-            return;
-        }
-        // No optimizeDeps block — insert before the closing `})` or `}`
-        // Match the last closing: newline, optional indent, `}` optionally followed by `)`
-        const closingRe = /\n([ \t]*)(}\)?\s*)$/;
-        const closingMatch = content.match(closingRe);
-        if (closingMatch) {
-            const excludeBlock = `${indent}optimizeDeps: {\n${i2}exclude: [${quoted}],\n${indent}},`;
-            // Ensure the previous property has a trailing comma
-            let updated = content;
-            const lastPropRe = /([^\s,])([ \t]*\n[ \t]*}\)?\s*)$/;
-            updated = updated.replace(lastPropRe, '$1,$2');
-            updated = updated.replace(closingRe, `\n${excludeBlock}\n$1$2`);
-            writeFileSync(vitePath, updated);
-        }
+    const result = exclude
+        ? addOptimizeDepsExclude(content, depName)
+        : removeOptimizeDepsExclude(content, depName);
+    if (result.status === 'changed') {
+        writeFileSync(vitePath, result.content);
     }
-    else {
-        // Remove depName from optimizeDeps.exclude
-        if (!content.includes('optimizeDeps'))
-            return;
-        let updated = content;
-        // Remove the entry from the exclude array
-        const excludeRe = /exclude:\s*\[([^\]]*)\]/s;
-        const excludeMatch = updated.match(excludeRe);
-        if (!excludeMatch)
-            return;
-        if (!excludeMatch[1].includes(quoted))
-            return;
-        // Remove the dep from the array
-        const items = excludeMatch[1]
-            .split(',')
-            .map(s => s.trim())
-            .filter(s => s && s !== quoted);
-        if (items.length > 0) {
-            // Other items remain
-            updated = updated.replace(excludeRe, `exclude: [${items.join(', ')}]`);
-        }
-        else {
-            // exclude array is now empty — remove the entire optimizeDeps block
-            // Match the property line through closing `},` at the same indent level
-            const indentMatch = updated.match(/\n([ \t]*)optimizeDeps:/);
-            if (indentMatch) {
-                const propIndent = indentMatch[1];
-                const blockRe = new RegExp(`\\n${propIndent}optimizeDeps:\\s*\\{[\\s\\S]*?\\n${propIndent}\\},?\\n?`);
-                updated = updated.replace(blockRe, '\n');
-                // Check if the now-last property has a trailing comma we should remove.
-                // We added a comma during insertion if the file didn't use trailing commas
-                // on its last property. Detect by checking: does the now-last line before
-                // `})` end with `,`, and would removing it leave a `}` or `]` (i.e., the
-                // comma was after a closing bracket, not inline like `foo: 1,`)?
-                // Simple heuristic: if the file's last property ends with `},` or `],`
-                // before `})`, check if all OTHER properties at this level also end with
-                // `,`. If not, this trailing comma was likely added by us.
-                const propEndRe = new RegExp(`^${propIndent}(\\S.*?)\\s*$`, 'gm');
-                const propEndings = [];
-                let m;
-                while ((m = propEndRe.exec(updated)) !== null) {
-                    if (m[1].startsWith('optimizeDeps'))
-                        continue;
-                    propEndings.push(m[1].endsWith(','));
-                }
-                // If the last entry is true (has comma) but most others are false,
-                // it was likely added by us. More precisely: if it's the only one
-                // without a matching style, remove it.
-                if (propEndings.length > 0) {
-                    const lastHasComma = propEndings[propEndings.length - 1];
-                    const othersWithComma = propEndings.slice(0, -1).filter(Boolean).length;
-                    const othersWithout = propEndings.slice(0, -1).filter(x => !x).length;
-                    if (lastHasComma && othersWithout > 0 && othersWithComma <= othersWithout) {
-                        updated = updated.replace(/,([ \t]*\n[ \t]*}\)?\s*$)/, '$1');
-                    }
-                }
-            }
-        }
-        if (updated !== content) {
-            writeFileSync(vitePath, updated);
-        }
+    else if (result.status === 'unsupported') {
+        const verb = exclude ? `add '${depName}' to` : `remove '${depName}' from`;
+        log.warn(`${name}: couldn't ${verb} \`optimizeDeps.exclude\` (${result.reason}); edit it manually`);
     }
+    return result.status;
+}
+// `pds l` found the dep already in `optimizeDeps.exclude` though it wasn't local,
+// so the entry is the user's, not pds's: record that (once, in .pds.json) so
+// switching away from local doesn't remove it.
+function markKeepViteExclude(projectRoot, depName, depConfig) {
+    depConfig.keepViteExclude = true;
+    const config = loadConfig(projectRoot);
+    const dep = config.dependencies[depName];
+    if (dep && dep.keepViteExclude === undefined) {
+        dep.keepViteExclude = true;
+        saveConfig(projectRoot, config);
+    }
+    console.log(`  ${depName} was already in vite \`optimizeDeps.exclude\`: treating it as yours (kept when switching away; \`pds set ${depName} -K\` to undo)`);
 }
 // Generate GitHub specifier using HTTPS tarball URL (avoids SSH auth issues in CI)
 export function makeGitHubSpecifier(repo, ref, subdir) {
@@ -190,24 +108,30 @@ export function switchToLocal(projectRoot, depName, depConfig, workspaceRoot) {
     }
     const pkg = loadPackageJson(projectRoot);
     const inPkg = hasDependency(pkg, depName);
+    const wsRoot = workspaceRoot ?? projectRoot;
+    const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] };
+    if (!ws.packages)
+        ws.packages = workspaceRoot ? [] : ['.'];
+    const wsLocalPath = workspaceLocalPath(projectRoot, localPath, workspaceRoot);
+    const wasLocal = inPkg
+        ? isLocalSpecifier(getCurrentSource(pkg, depName))
+        : ws.packages.includes(wsLocalPath);
     if (inPkg) {
         updatePackageJsonDep(pkg, depName, 'workspace:*');
         savePackageJson(projectRoot, pkg);
     }
     // Update pnpm-workspace.yaml
-    const wsRoot = workspaceRoot ?? projectRoot;
-    const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] };
-    if (!ws.packages)
-        ws.packages = workspaceRoot ? [] : ['.'];
     if (!workspaceRoot && !ws.packages.includes('.'))
         ws.packages.unshift('.');
-    const wsLocalPath = workspaceLocalPath(projectRoot, localPath, workspaceRoot);
     if (!ws.packages.includes(wsLocalPath)) {
         ws.packages.push(wsLocalPath);
     }
     saveWorkspaceYaml(wsRoot, ws);
     // Update vite.config.ts
-    updateViteConfig(projectRoot, depName, true);
+    const viteStatus = updateViteConfig(projectRoot, depName, true);
+    if (viteStatus === 'unchanged' && !wasLocal && depConfig.keepViteExclude === undefined) {
+        markKeepViteExclude(projectRoot, depName, depConfig);
+    }
     console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}${transitiveNote(inPkg)}`);
 }
 // Helper to switch a dependency to GitHub mode
@@ -309,8 +233,9 @@ export function cleanupDepReferences(projectRoot, depName, depConfig, workspaceR
             }
         }
     }
-    // Clean up vite.config.ts
-    updateViteConfig(projectRoot, depName, false);
+    // Clean up vite.config.ts, unless the exclude entry is the user's
+    if (!depConfig.keepViteExclude)
+        updateViteConfig(projectRoot, depName, false);
 }
 export function runPnpmInstall(projectRoot, workspaceRoot) {
     const installDir = workspaceRoot ?? projectRoot;

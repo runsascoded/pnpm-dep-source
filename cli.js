@@ -10,6 +10,7 @@ import { loadPackageJson, savePackageJson, updatePackageJsonDep, hasDependency, 
 import { resolveGitHubRef, resolveGitLabRef, getLatestNpmVersion, npmPackageExists, getLocalPackageInfo, getRemotePackageInfo, isRepoUrl, getGlobalInstallSource, fetchAllGlobalInstallSourcesAsync, pkgPrNewBuildExists, isMissingRef, } from './remote.js';
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js';
 import { detectFleet } from './fleet.js';
+import { warnUnregisteredSiblings } from './siblings.js';
 import { setLogLevel, setRetries } from './log.js';
 import { makeGitHubSpecifier, makePkgPrNewSpecifier, switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew, switchToNpm, cleanupDepReferences, runPnpmInstall, runGlobalInstall, } from './switch.js';
 // Iterate `items`, invoking `fn` on each. On error, abort (default) or
@@ -443,6 +444,8 @@ program
     .description('Update fields for an existing dependency')
     .option('-b, --dist-branch <branch>', 'Set dist branch')
     .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
+    .option('-k, --keep-vite-exclude', 'The dep\'s vite `optimizeDeps.exclude` entry is yours: keep it when switching away from local')
+    .option('-K, --no-keep-vite-exclude', 'Let pds remove the dep\'s vite `optimizeDeps.exclude` entry when switching away from local')
     .option('-l, --local <path>', 'Set local path (use "" to remove)')
     .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
     .option('-n, --npm <name>', 'Set NPM package name')
@@ -513,8 +516,19 @@ program
         }
         changed = true;
     }
+    if (options.keepViteExclude !== undefined) {
+        if (options.keepViteExclude) {
+            dep.keepViteExclude = true;
+            console.log(`  Vite exclude: kept (yours)`);
+        }
+        else {
+            dep.keepViteExclude = false;
+            console.log(`  Vite exclude: managed by pds`);
+        }
+        changed = true;
+    }
     if (!changed) {
-        console.log(`No changes specified. Use -l, -H, -L, -n, -b, or -o/-O to update fields.`);
+        console.log(`No changes specified. Use -l, -H, -L, -n, -b, -o/-O, or -k/-K to update fields.`);
         return;
     }
     if (isGlobal) {
@@ -662,6 +676,7 @@ async function listDepsAsync(verbose, all, filters, sourceFilter) {
     if (!isGlobal) {
         projectRoot = findProjectRoot();
         const config = loadConfig(projectRoot);
+        warnUnregisteredSiblings(projectRoot, config);
         pkg = loadPackageJson(projectRoot);
         overrides = loadOverrides(projectRoot, pkg);
         if (Object.keys(config.dependencies).length === 0 && !all) {
@@ -749,6 +764,7 @@ program
     const projectRoot = findProjectRoot();
     const workspaceRoot = findWorkspaceRoot(projectRoot);
     const config = loadConfig(projectRoot);
+    warnUnregisteredSiblings(projectRoot, config);
     const items = resolveDepItems(config, queries, options.all);
     runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
         if (!depConfig.localPath) {
@@ -777,6 +793,8 @@ program
     const queries = deps.length ? deps : [undefined];
     const isGlobal = program.opts().global;
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    if (!isGlobal)
+        warnUnregisteredSiblings(findProjectRoot(), config);
     const resolveRef = (github, distBranch) => {
         if (options.rawRef)
             return options.rawRef;
@@ -841,6 +859,8 @@ program
     const queries = deps.length ? deps : [undefined];
     const isGlobal = program.opts().global;
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    if (!isGlobal)
+        warnUnregisteredSiblings(findProjectRoot(), config);
     const resolveRef = (gitlab, distBranch) => {
         if (options.rawRef)
             return options.rawRef;
@@ -909,6 +929,8 @@ program
     const queries = deps.length ? deps : [undefined];
     const isGlobal = program.opts().global;
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    if (!isGlobal)
+        warnUnregisteredSiblings(findProjectRoot(), config);
     if (isGlobal) {
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
@@ -1006,6 +1028,8 @@ program
     const queries = deps.length ? deps : [undefined];
     const isGlobal = program.opts().global;
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot());
+    if (!isGlobal)
+        warnUnregisteredSiblings(findProjectRoot(), config);
     // Default ref: the repo's default-branch HEAD (pkg.pr.new keys builds off
     // main/PR commits; no dist branch). `commits/HEAD` resolves the default
     // branch regardless of its name.
@@ -1163,6 +1187,7 @@ program
     }
     const projectRoot = findProjectRoot();
     const config = loadConfig(projectRoot);
+    warnUnregisteredSiblings(projectRoot, config);
     const pkg = loadPackageJson(projectRoot);
     const overrides = loadOverrides(projectRoot, pkg);
     const deps = depQuery
