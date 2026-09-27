@@ -12,7 +12,7 @@ import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfo
 import { detectFleet } from './fleet.js';
 import { warnUnregisteredSiblings } from './siblings.js';
 import { setLogLevel, setRetries } from './log.js';
-import { makeGitHubSpecifier, makePkgPrNewSpecifier, switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew, switchToNpm, cleanupDepReferences, runPnpmInstall, runGlobalInstall, } from './switch.js';
+import { makeGitHubSpecifier, makePkgPrNewSpecifier, switchToLocal, switchToGitHub, switchToGitLab, switchToPkgPrNew, switchToNpm, cleanupDepReferences, runPnpmInstall, installGlobal, } from './switch.js';
 // Iterate `items`, invoking `fn` on each. On error, abort (default) or
 // continue collecting failures (`keepGoing`). After iteration, if any
 // failures were collected, exit non-zero.
@@ -230,11 +230,8 @@ function initOne(pathOrUrl, options, isGlobal, projectRoot, workspaceRoot) {
             console.log(`  NPM: ${npmName}`);
         if (distStyle.distBranch)
             console.log(`  Dist branch: ${distStyle.distBranch}`);
-        if (localPath) {
-            // link: (live symlink) rather than file: (copy), so a global install of a
-            // dep under active development reflects rebuilds without reinstalling.
-            runGlobalInstall(`link:${localPath}`);
-            console.log(`Installed ${pkgName} globally from local: ${localPath}`);
+        if (activateSource) {
+            installGlobal(pkgName, config.dependencies[pkgName], activateSource, { rawRef: options.rawRef });
         }
         return false;
     }
@@ -752,12 +749,7 @@ program
         const config = loadGlobalConfig();
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
-            if (!depConfig.localPath) {
-                throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`);
-            }
-            // link: (live symlink) rather than file: (copy) — see initOne note.
-            runGlobalInstall(`link:${depConfig.localPath}`);
-            console.log(`Installed ${depName} globally from local: ${depConfig.localPath}`);
+            installGlobal(depName, depConfig, 'local');
         });
         return;
     }
@@ -805,18 +797,7 @@ program
     if (isGlobal) {
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
-            if (!depConfig.github) {
-                throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`);
-            }
-            const distBranch = depConfig.distBranch ?? 'dist';
-            const resolvedRef = resolveRef(depConfig.github, distBranch);
-            const specifier = makeGitHubSpecifier(depConfig.github, resolvedRef, depConfig.subdir);
-            if (options.dryRun) {
-                console.log(`Would switch ${depName} to: ${specifier}`);
-                return;
-            }
-            runGlobalInstall(specifier);
-            console.log(`Installed ${depName} globally from GitHub: ${specifier}`);
+            installGlobal(depName, depConfig, 'github', options);
         });
         return;
     }
@@ -875,18 +856,7 @@ program
     if (isGlobal) {
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
-            if (!depConfig.gitlab) {
-                throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`);
-            }
-            const distBranch = depConfig.distBranch ?? 'dist';
-            const resolvedRef = resolveRef(depConfig.gitlab, distBranch);
-            const tarballUrl = tarballUrlFor(depConfig.gitlab, resolvedRef);
-            if (options.dryRun) {
-                console.log(`Would switch ${depName} to: ${tarballUrl}`);
-                return;
-            }
-            runGlobalInstall(tarballUrl);
-            console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${resolvedRef}`);
+            installGlobal(depName, depConfig, 'gitlab', options);
         });
         return;
     }
@@ -942,30 +912,7 @@ program
             if (hasGitHub && hasGitLab) {
                 throw new Error(`Both GitHub and GitLab configured for ${depName}. Use "pds gh" or "pds gl" explicitly`);
             }
-            const distBranch = depConfig.distBranch ?? 'dist';
-            if (hasGitHub) {
-                const ref = options.rawRef
-                    ?? (options.ref ? resolveGitHubRef(depConfig.github, options.ref) : resolveGitHubRef(depConfig.github, distBranch));
-                const specifier = makeGitHubSpecifier(depConfig.github, ref, depConfig.subdir);
-                if (options.dryRun) {
-                    console.log(`Would switch ${depName} to: ${specifier}`);
-                    return;
-                }
-                runGlobalInstall(specifier);
-                console.log(`Installed ${depName} globally from GitHub: ${specifier}`);
-            }
-            else {
-                const ref = options.rawRef
-                    ?? (options.ref ? resolveGitLabRef(depConfig.gitlab, options.ref) : resolveGitLabRef(depConfig.gitlab, distBranch));
-                const repoBasename = depConfig.gitlab.split('/').pop();
-                const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`;
-                if (options.dryRun) {
-                    console.log(`Would switch ${depName} to: ${tarballUrl}`);
-                    return;
-                }
-                runGlobalInstall(tarballUrl);
-                console.log(`Installed ${depName} globally from GitLab: ${depConfig.gitlab}@${ref}`);
-            }
+            installGlobal(depName, depConfig, hasGitHub ? 'github' : 'gitlab', options);
         });
         return;
     }
@@ -1052,16 +999,9 @@ program
     if (isGlobal) {
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
-            const { github, npm } = requireFields(depName, depConfig);
-            const sha = resolveSha(github);
-            const specifier = makePkgPrNewSpecifier(github, npm, sha);
-            if (options.dryRun) {
-                console.log(`Would switch ${depName} to: ${specifier}`);
-                return;
-            }
-            runGlobalInstall(specifier);
-            console.log(`Installed ${depName} globally from pkg.pr.new: ${specifier}`);
-            built.push({ depName, url: specifier });
+            const specifier = installGlobal(depName, depConfig, 'cr', options);
+            if (!options.dryRun)
+                built.push({ depName, url: specifier });
         });
         await warnMissingBuilds(built, options.dryRun);
         return;
@@ -1133,15 +1073,7 @@ program
     if (isGlobal) {
         const items = resolveDepItems(config, queries, options.all);
         runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
-            const npmName = depConfig.npm ?? depName;
-            const resolvedVersion = version ?? getLatestNpmVersion(npmName);
-            const specifier = `^${resolvedVersion}`;
-            if (options.dryRun) {
-                console.log(`Would switch ${depName} to: ${specifier}`);
-                return;
-            }
-            runGlobalInstall(`${npmName}@${resolvedVersion}`);
-            console.log(`Installed ${depName} globally from NPM: ${npmName}@${resolvedVersion}`);
+            installGlobal(depName, depConfig, 'npm', { version, dryRun: options.dryRun });
         });
         return;
     }

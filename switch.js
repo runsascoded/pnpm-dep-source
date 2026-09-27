@@ -4,7 +4,7 @@ import { join, relative, resolve } from 'path';
 import { c } from './constants.js';
 import { loadPackageJson, savePackageJson, updatePackageJsonDep, setPnpmOverride, removePnpmOverride, hasDependency, loadWorkspaceYaml, saveWorkspaceYaml, getCurrentSource, isLocalSpecifier, } from './pkg.js';
 import { loadConfig, saveConfig } from './config.js';
-import { resolveGitHubRef, resolveGitLabRef } from './remote.js';
+import { getLatestNpmVersion, resolveGitHubRef, resolveGitLabRef } from './remote.js';
 import { workspaceLocalPath } from './project.js';
 import { log } from './log.js';
 import { addOptimizeDepsExclude, removeOptimizeDepsExclude } from './vite-config.js';
@@ -70,6 +70,11 @@ export function makeGitHubSpecifier(repo, ref, subdir) {
         return `https://github.com/${repo}#${ref}&path:${subdir}`;
     }
     return `https://github.com/${repo}#${ref}`;
+}
+// GitLab archive tarball URL (pnpm has no `gitlab:` specifier)
+export function makeGitLabTarballUrl(gitlab, ref) {
+    const repoBasename = gitlab.split('/').pop();
+    return `https://gitlab.com/${gitlab}/-/archive/${ref}/${repoBasename}-${ref}.tar.gz`;
 }
 // Generate a pkg.pr.new continuous-release URL: a raw HTTPS tarball-style
 // specifier pnpm installs directly (mechanically like the GitLab tarball URL).
@@ -161,8 +166,7 @@ export function switchToGitLab(projectRoot, depName, depConfig, ref, workspaceRo
     const distBranch = depConfig.distBranch ?? 'dist';
     const resolvedRef = ref ?? resolveGitLabRef(depConfig.gitlab, distBranch);
     // GitLab uses tarball URL format (pnpm doesn't support gitlab: prefix)
-    const repoBasename = depConfig.gitlab.split('/').pop();
-    const tarballUrl = `https://gitlab.com/${depConfig.gitlab}/-/archive/${resolvedRef}/${repoBasename}-${resolvedRef}.tar.gz`;
+    const tarballUrl = makeGitLabTarballUrl(depConfig.gitlab, resolvedRef);
     if (depConfig.override) {
         const root = overrideRoot(projectRoot, workspaceRoot);
         applyOverride(root, depName, tarballUrl);
@@ -250,5 +254,63 @@ export function runPnpmInstall(projectRoot, workspaceRoot) {
 export function runGlobalInstall(specifier) {
     console.log(`Running pnpm add -g ${specifier}...`);
     execSync(`pnpm add -g ${specifier}`, { stdio: 'inherit' });
+}
+/** What a global install of `depName` from `source` installs, and how to describe it. */
+export function globalInstallTarget(depName, depConfig, source, opts = {}) {
+    const distBranch = depConfig.distBranch ?? 'dist';
+    const requireGitHub = () => {
+        if (!depConfig.github)
+            throw new Error(`No GitHub repo configured for ${depName}. Use "pds init" with -H/--github`);
+        return depConfig.github;
+    };
+    switch (source) {
+        case 'local': {
+            if (!depConfig.localPath) {
+                throw new Error(`No local path configured for ${depName}. Use "pds set ${depName} -l <path>" to set one.`);
+            }
+            // link: (live symlink) rather than file: (copy), so a global install of a
+            // dep under active development reflects rebuilds without reinstalling.
+            return { specifier: `link:${depConfig.localPath}`, label: `local: ${depConfig.localPath}` };
+        }
+        case 'github': {
+            const github = requireGitHub();
+            const ref = opts.rawRef ?? resolveGitHubRef(github, opts.ref ?? distBranch);
+            const specifier = makeGitHubSpecifier(github, ref, depConfig.subdir);
+            return { specifier, label: `GitHub: ${specifier}` };
+        }
+        case 'gitlab': {
+            const { gitlab } = depConfig;
+            if (!gitlab)
+                throw new Error(`No GitLab repo configured for ${depName}. Use "pds init" with -L/--gitlab`);
+            const ref = opts.rawRef ?? resolveGitLabRef(gitlab, opts.ref ?? distBranch);
+            return { specifier: makeGitLabTarballUrl(gitlab, ref), label: `GitLab: ${gitlab}@${ref}` };
+        }
+        case 'cr': {
+            const github = requireGitHub();
+            if (!depConfig.npm) {
+                throw new Error(`No npm package name configured for ${depName}. Use "pds set ${depName} -n <name>"`);
+            }
+            const sha = opts.rawRef ?? resolveGitHubRef(github, opts.ref ?? 'HEAD');
+            const specifier = makePkgPrNewSpecifier(github, depConfig.npm, sha);
+            return { specifier, label: `pkg.pr.new: ${specifier}` };
+        }
+        case 'npm': {
+            const npmName = depConfig.npm ?? depName;
+            const version = opts.version ?? getLatestNpmVersion(npmName);
+            return { specifier: `${npmName}@${version}`, label: `NPM: ${npmName}@${version}` };
+        }
+    }
+}
+/** Install `depName` globally from `source` (or, with `dryRun`, just print it). Returns the specifier. */
+export function installGlobal(depName, depConfig, source, opts = {}) {
+    const { specifier, label } = globalInstallTarget(depName, depConfig, source, opts);
+    if (opts.dryRun) {
+        console.log(`Would switch ${depName} to: ${specifier}`);
+    }
+    else {
+        runGlobalInstall(specifier);
+        console.log(`Installed ${depName} globally from ${label}`);
+    }
+    return specifier;
 }
 //# sourceMappingURL=switch.js.map
