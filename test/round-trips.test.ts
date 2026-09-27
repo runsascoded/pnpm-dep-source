@@ -166,6 +166,20 @@ export default defineConfig({
       const viteAfter = readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')
       expect(viteAfter).toBe(viteContent)
     })
+
+    it.each([
+      ['pre-existing `include`', `  optimizeDeps: {\n    include: ['foo'],\n  },\n`],
+      ['pre-existing `include` and unrelated `exclude`', `  optimizeDeps: {\n    include: ['foo'],\n    exclude: ['bar'],\n  },\n`],
+      ['`include` block followed by other properties', `  optimizeDeps: {\n    include: ['foo'],\n  },\n\n  server: {\n    port: 3201,\n  },\n`],
+    ])('preserves %s in optimizeDeps', (_, body) => {
+      const viteContent = `import { defineConfig } from 'vite'\n\nexport default defineConfig({\n  plugins: [],\n${body}})\n`
+      writeFileSync(join(TEST_DIR, 'vite.config.ts'), viteContent)
+
+      run('local mock-dep -I')
+      run('github mock-dep -R main -I')
+
+      expect(readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')).toBe(viteContent)
+    })
   })
 
   describe('local → npm round-trip', () => {

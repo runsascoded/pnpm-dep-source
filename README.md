@@ -69,6 +69,8 @@ This will (per dep):
 
 One `pnpm install` is run at the end (skip with `-I`).
 
+The Vite config (`vite.config.{ts,mts,js,mjs}`) is parsed to locate `optimizeDeps.exclude`, then edited with minimal text splices: formatting, comments, quote style and other `optimizeDeps` keys (`include`, `esbuildOptions`, …) are untouched, and switching away from local restores the file byte-for-byte. If the config can't be edited safely (e.g. `exclude: someVariable`), pds warns and leaves it alone.
+
 ### Switch to GitHub or GitLab (auto-detect)
 
 ```bash

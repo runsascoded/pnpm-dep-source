@@ -38,9 +38,11 @@
     "url": "https://github.com/runsascoded/pnpm-dep-source/issues"
   },
   "dependencies": {
+    "@babel/parser": "^7.29.9",
     "commander": "^13.0.0"
   },
   "devDependencies": {
+    "@babel/types": "^7.29.8",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.16"
