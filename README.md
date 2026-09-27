@@ -71,6 +71,8 @@ One `pnpm install` is run at the end (skip with `-I`).
 
 The Vite config (`vite.config.{ts,mts,js,mjs}`) is parsed to locate `optimizeDeps.exclude`, then edited with minimal text splices: formatting, comments, quote style and other `optimizeDeps` keys (`include`, `esbuildOptions`, …) are untouched, and switching away from local restores the file byte-for-byte. If the config can't be edited safely (e.g. `exclude: someVariable`), pds warns and leaves it alone.
 
+Some deps must stay excluded regardless of source (e.g. a WASM package, which esbuild's pre-bundling breaks). If `pds l` finds a dep already in `exclude` while it wasn't local, pds treats that entry as yours: it records `keepViteExclude: true` in `.pds.json` and never removes the entry when switching away. When the dep is already local (so pds can't tell who added the entry), mark it with `pds set <dep> -k`; `pds set <dep> -K` hands the entry back to pds.
+
 ### Switch to GitHub or GitLab (auto-detect)
 
 ```bash
@@ -292,6 +294,7 @@ pds set <dep> -L user/repo      # Set GitLab repo
 pds set <dep> -l ../path        # Set local path
 pds set <dep> -n pkg-name       # Set NPM name
 pds set <dep> -H ""             # Remove GitHub
+pds set <dep> -k                # Keep the dep's vite `optimizeDeps.exclude` entry (yours, not pds's)
 pds -g set                      # Update global config (with single dep)
 ```
 
@@ -486,6 +489,7 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 - `-l, --local <path>`: Local path (for `init` with URL, or `set` command)
 - `-L, --gitlab <repo>`: GitLab repo (auto-detected from package.json if not specified)
 - `-n, --dry-run`: Show what would be installed without making changes (for `gh`/`gl`/`g`/`cr`/`npm`)
+- `-k, --keep-vite-exclude` / `-K, --no-keep-vite-exclude`: The dep's vite `optimizeDeps.exclude` entry is yours (kept when switching away from local) / pds's (for `set`; see [Local mode](#switch-to-local-mode))
 - `-o, --override` / `-O, --no-override`: Manage the dep through `pnpm.overrides` (forces the whole graph, incl. transitive monorepo siblings) instead of the `package.json` dep spec (for `init`/`set`; see [Override strategy](#override-strategy--o--override))
 - `-r, --ref <ref>`: Git ref, resolved to SHA (for `github`/`gitlab`/`cr` commands)
 - `-R, --raw-ref <ref>`: Git ref, used as-is (pin to branch/tag name)

@@ -98,6 +98,13 @@ Tests:
 
 Downstream: filed `hccs/path/specs/restore-plotly-optimizedeps-include.md`.
 
-## Not addressed: user-owned excludes
+## Follow-up: user-owned excludes (`keepViteExclude`)
 
-pds can't tell an entry it added (for local HMR) from one the user wants permanently, so switching away from local removes the entry either way. That's pre-existing behavior, but it's real: `apvd` manages `@apvd/wasm` via pds *and* needs it excluded always (esbuild breaks WASM imports). Needs provenance (a per-dep `.pds.json` marker); tracked separately.
+pds can't tell an entry it added (for local HMR) from one the user wants permanently, and switching away from local used to remove both. Real case: `apvd` manages `@apvd/wasm` via pds *and* needs it excluded always (esbuild pre-bundling breaks WASM imports).
+
+Resolved with a durable per-dep marker in `.pds.json` (not per-switch bookkeeping, which would churn the committed config and misjudge projects already in local mode):
+- `keepViteExclude: true` — the entry is the user's; `cleanupDepReferences` leaves it. Set automatically when `pds l` finds the dep already in `exclude` while it wasn't local (package.json spec, or workspace membership for transitive deps), with a one-line notice; or via `pds set <dep> -k` when the dep is already local (not detectable).
+- `keepViteExclude: false` (`pds set -K`) — pds owns it, and the auto-detection is skipped (otherwise the entry left behind while non-local would be re-detected as the user's on the next `pds l`).
+- Unset — pds owns it; auto-detection applies.
+
+A survey of local projects found no pds-managed dep sitting in `exclude` while non-local, so the auto-detection wouldn't mis-mark a stale entry anywhere today; apvd's `@apvd/wasm` (currently local) needs `pds set wasm -k`.

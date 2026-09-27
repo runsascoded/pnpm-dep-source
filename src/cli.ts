@@ -475,12 +475,14 @@ program
   .description('Update fields for an existing dependency')
   .option('-b, --dist-branch <branch>', 'Set dist branch')
   .option('-H, --github <repo>', 'Set GitHub repo (use "" to remove)')
+  .option('-k, --keep-vite-exclude', 'The dep\'s vite `optimizeDeps.exclude` entry is yours: keep it when switching away from local')
+  .option('-K, --no-keep-vite-exclude', 'Let pds remove the dep\'s vite `optimizeDeps.exclude` entry when switching away from local')
   .option('-l, --local <path>', 'Set local path (use "" to remove)')
   .option('-L, --gitlab <repo>', 'Set GitLab repo (use "" to remove)')
   .option('-n, --npm <name>', 'Set NPM package name')
   .option('-o, --override', 'Manage via pnpm.overrides (forces the whole graph, incl. transitive monorepo siblings)')
   .option('-O, --no-override', 'Stop managing via pnpm.overrides')
-  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; gitlab?: string; local?: string; npm?: string; override?: boolean }) => {
+  .action((depQuery: string | undefined, options: { distBranch?: string; github?: string; gitlab?: string; keepViteExclude?: boolean; local?: string; npm?: string; override?: boolean }) => {
     const isGlobal = program.opts().global
     const projectRoot = isGlobal ? '' : findProjectRoot()
     const config = isGlobal ? loadGlobalConfig() : loadConfig(projectRoot)
@@ -550,8 +552,19 @@ program
       changed = true
     }
 
+    if (options.keepViteExclude !== undefined) {
+      if (options.keepViteExclude) {
+        dep.keepViteExclude = true
+        console.log(`  Vite exclude: kept (yours)`)
+      } else {
+        dep.keepViteExclude = false
+        console.log(`  Vite exclude: managed by pds`)
+      }
+      changed = true
+    }
+
     if (!changed) {
-      console.log(`No changes specified. Use -l, -H, -L, -n, -b, or -o/-O to update fields.`)
+      console.log(`No changes specified. Use -l, -H, -L, -n, -b, -o/-O, or -k/-K to update fields.`)
       return
     }
 

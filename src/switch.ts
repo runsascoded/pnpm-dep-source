@@ -6,12 +6,13 @@ import { c } from './constants.js'
 import {
   loadPackageJson, savePackageJson,
   updatePackageJsonDep, setPnpmOverride, removePnpmOverride, hasDependency,
-  loadWorkspaceYaml, saveWorkspaceYaml,
+  loadWorkspaceYaml, saveWorkspaceYaml, getCurrentSource, isLocalSpecifier,
 } from './pkg.js'
+import { loadConfig, saveConfig } from './config.js'
 import { resolveGitHubRef, resolveGitLabRef } from './remote.js'
 import { workspaceLocalPath } from './project.js'
 import { log } from './log.js'
-import { addOptimizeDepsExclude, removeOptimizeDepsExclude } from './vite-config.js'
+import { addOptimizeDepsExclude, removeOptimizeDepsExclude, type ViteEditStatus } from './vite-config.js'
 
 // pnpm.overrides live at the workspace root (the dir holding pnpm-workspace.yaml,
 // or the single-package project root). `override`-managed deps force the WHOLE
@@ -39,9 +40,9 @@ const VITE_CONFIGS = ['vite.config.ts', 'vite.config.mts', 'vite.config.js', 'vi
 
 // Add/remove `depName` in `optimizeDeps.exclude` (local deps must be excluded
 // from pre-bundling so edits hot-reload). See `vite-config.ts`.
-export function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): void {
+export function updateViteConfig(projectRoot: string, depName: string, exclude: boolean): ViteEditStatus | undefined {
   const name = VITE_CONFIGS.find(f => existsSync(join(projectRoot, f)))
-  if (!name) return
+  if (!name) return undefined
   const vitePath = join(projectRoot, name)
   const content = readFileSync(vitePath, 'utf-8')
   const result = exclude
@@ -53,6 +54,21 @@ export function updateViteConfig(projectRoot: string, depName: string, exclude: 
     const verb = exclude ? `add '${depName}' to` : `remove '${depName}' from`
     log.warn(`${name}: couldn't ${verb} \`optimizeDeps.exclude\` (${result.reason}); edit it manually`)
   }
+  return result.status
+}
+
+// `pds l` found the dep already in `optimizeDeps.exclude` though it wasn't local,
+// so the entry is the user's, not pds's: record that (once, in .pds.json) so
+// switching away from local doesn't remove it.
+function markKeepViteExclude(projectRoot: string, depName: string, depConfig: DepConfig): void {
+  depConfig.keepViteExclude = true
+  const config = loadConfig(projectRoot)
+  const dep = config.dependencies[depName]
+  if (dep && dep.keepViteExclude === undefined) {
+    dep.keepViteExclude = true
+    saveConfig(projectRoot, config)
+  }
+  console.log(`  ${depName} was already in vite \`optimizeDeps.exclude\`: treating it as yours (kept when switching away; \`pds set ${depName} -K\` to undo)`)
 }
 
 // Generate GitHub specifier using HTTPS tarball URL (avoids SSH auth issues in CI)
@@ -111,24 +127,31 @@ export function switchToLocal(
 
   const pkg = loadPackageJson(projectRoot)
   const inPkg = hasDependency(pkg, depName)
+  const wsRoot = workspaceRoot ?? projectRoot
+  const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] }
+  if (!ws.packages) ws.packages = workspaceRoot ? [] : ['.']
+  const wsLocalPath = workspaceLocalPath(projectRoot, localPath, workspaceRoot)
+  const wasLocal = inPkg
+    ? isLocalSpecifier(getCurrentSource(pkg, depName))
+    : ws.packages.includes(wsLocalPath)
+
   if (inPkg) {
     updatePackageJsonDep(pkg, depName, 'workspace:*')
     savePackageJson(projectRoot, pkg)
   }
 
   // Update pnpm-workspace.yaml
-  const wsRoot = workspaceRoot ?? projectRoot
-  const ws = loadWorkspaceYaml(wsRoot) ?? { packages: workspaceRoot ? [] : ['.'] }
-  if (!ws.packages) ws.packages = workspaceRoot ? [] : ['.']
   if (!workspaceRoot && !ws.packages.includes('.')) ws.packages.unshift('.')
-  const wsLocalPath = workspaceLocalPath(projectRoot, localPath, workspaceRoot)
   if (!ws.packages.includes(wsLocalPath)) {
     ws.packages.push(wsLocalPath)
   }
   saveWorkspaceYaml(wsRoot, ws)
 
   // Update vite.config.ts
-  updateViteConfig(projectRoot, depName, true)
+  const viteStatus = updateViteConfig(projectRoot, depName, true)
+  if (viteStatus === 'unchanged' && !wasLocal && depConfig.keepViteExclude === undefined) {
+    markKeepViteExclude(projectRoot, depName, depConfig)
+  }
 
   console.log(`Switched ${depName} to local: ${resolve(projectRoot, localPath)}${transitiveNote(inPkg)}`)
 }
@@ -279,8 +302,8 @@ export function cleanupDepReferences(projectRoot: string, depName: string, depCo
     }
   }
 
-  // Clean up vite.config.ts
-  updateViteConfig(projectRoot, depName, false)
+  // Clean up vite.config.ts, unless the exclude entry is the user's
+  if (!depConfig.keepViteExclude) updateViteConfig(projectRoot, depName, false)
 }
 
 export function runPnpmInstall(projectRoot: string, workspaceRoot?: string | null): void {

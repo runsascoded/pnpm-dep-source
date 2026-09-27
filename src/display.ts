@@ -3,7 +3,7 @@ import { resolve } from 'path'
 import type { DepConfig, DepDisplayInfo, RemoteVersions } from './types.js'
 import { log } from './log.js'
 import { c } from './constants.js'
-import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion } from './pkg.js'
+import { getCurrentSource, getCommittedPackageJson, getInstalledVersion, getGlobalInstalledVersion, isLocalSpecifier } from './pkg.js'
 import {
   getLocalGitInfo, getLocalGitInfoAsync,
   getGlobalInstallSource,
@@ -18,7 +18,7 @@ import {
 } from './remote.js'
 
 export function getSourceType(source: string): 'local' | 'github' | 'gitlab' | 'cr' | 'npm' | 'unknown' {
-  if (source === 'workspace:*' || source === 'local' || source.startsWith('link:') || source.startsWith('file:')) return 'local'
+  if (source === 'local' || isLocalSpecifier(source)) return 'local'
   if (source.includes('pkg.pr.new')) return 'cr'
   if (source.startsWith('github:') || source.includes('github.com/')) return 'github'
   if (source.includes('gitlab.com') && source.includes('/-/archive/')) return 'gitlab'

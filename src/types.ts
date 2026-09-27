@@ -12,6 +12,12 @@ export interface DepConfig {
   override?: boolean    // manage via pnpm.overrides (force whole graph, incl.
                         // transitive monorepo siblings) instead of rewriting the
                         // package.json dep spec; local→link:<path>, else the URL
+  keepViteExclude?: boolean  // true: the dep's vite `optimizeDeps.exclude` entry is
+                        // the user's (e.g. a WASM package that must never be
+                        // pre-bundled), so switching away from local leaves it.
+                        // Set automatically when `pds l` finds the dep already
+                        // excluded while it wasn't local, or via `pds set -k`.
+                        // false (`pds set -K`): pds manages it; skip that detection.
 }
 
 export interface Config {

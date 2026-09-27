@@ -260,6 +260,59 @@ export default defineConfig({
     })
   })
 
+  describe('user-owned vite exclude (`keepViteExclude`)', () => {
+    const CONFIG = join(TEST_DIR, '.pnpm-dep-source.json')
+    const VITE = join(TEST_DIR, 'vite.config.ts')
+    const BASE_DEP = { localPath: '../mock-dep', github: 'test-org/mock-dep', npm: '@test/mock-dep', distBranch: 'dist' }
+    const depConfig = () => (readJson(CONFIG).dependencies as Record<string, unknown>)['@test/mock-dep']
+    const lines = (out: string) => out.trimEnd().split('\n').map(l => l.replace(/local: \/.*$/, 'local: <path>'))
+    const userOwned = `import { defineConfig } from 'vite'\n\nexport default defineConfig({\n  plugins: [],\n  optimizeDeps: {\n    exclude: ['@test/mock-dep'], // WASM: never pre-bundle\n  },\n})\n`
+
+    it('detects an entry that predates `pds l`, and keeps it on switch-away', () => {
+      writeFileSync(VITE, userOwned)
+
+      expect(lines(run('local mock-dep -I'))).toEqual([
+        '  @test/mock-dep was already in vite `optimizeDeps.exclude`: treating it as yours (kept when switching away; `pds set @test/mock-dep -K` to undo)',
+        'Switched @test/mock-dep to local: <path>',
+      ])
+      expect(depConfig()).toEqual({ ...BASE_DEP, keepViteExclude: true })
+      expect(readFileSync(VITE, 'utf-8')).toBe(userOwned)
+
+      run('github mock-dep -R main -I')
+      expect(readFileSync(VITE, 'utf-8')).toBe(userOwned)
+
+      // Subsequent l/g cycles: no re-detection message, entry still kept.
+      expect(lines(run('local mock-dep -I'))).toEqual(['Switched @test/mock-dep to local: <path>'])
+      run('npm mock-dep 2.0.0 -I')
+      expect(readFileSync(VITE, 'utf-8')).toBe(userOwned)
+    })
+
+    it('does not mark an entry pds added itself (repeat `pds l`)', () => {
+      run('local mock-dep -I')
+      expect(lines(run('local mock-dep -I'))).toEqual(['Switched @test/mock-dep to local: <path>'])
+      expect(depConfig()).toEqual(BASE_DEP)
+    })
+
+    it('`set -k` protects an entry that can\'t be detected (dep already local); `-K` hands it back to pds', () => {
+      const original = readFileSync(VITE, 'utf-8')
+      run('local mock-dep -I')
+      const localVite = readFileSync(VITE, 'utf-8')
+
+      expect(run('set mock-dep -k').trimEnd().split('\n')).toEqual(['  Vite exclude: kept (yours)', 'Updated @test/mock-dep'])
+      expect(depConfig()).toEqual({ ...BASE_DEP, keepViteExclude: true })
+      run('github mock-dep -R main -I')
+      expect(readFileSync(VITE, 'utf-8')).toBe(localVite)
+
+      // `-K` is remembered (`false`), so the entry left behind while non-local
+      // isn't re-detected as the user's on the next `pds l`.
+      expect(run('set mock-dep -K').trimEnd().split('\n')).toEqual(['  Vite exclude: managed by pds', 'Updated @test/mock-dep'])
+      expect(depConfig()).toEqual({ ...BASE_DEP, keepViteExclude: false })
+      expect(lines(run('local mock-dep -I'))).toEqual(['Switched @test/mock-dep to local: <path>'])
+      run('github mock-dep -R main -I')
+      expect(readFileSync(VITE, 'utf-8')).toBe(original)
+    })
+  })
+
   describe('preserves other pnpm config', () => {
     it('keeps onlyBuiltDependencies when removing overrides', () => {
       const pkgPath = join(TEST_DIR, 'package.json')
