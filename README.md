@@ -252,6 +252,16 @@ pds cr slidev -a
 
 A plain (non-workspace) package path still inits as a single dep, exactly as before.
 
+**Half-registered fleets are flagged.** A config built by `init`-ing individual package paths can miss a sibling, leaving `pds l -a` to swap only part of the fleet. `pds ls`/`status` and the `local`/`github`/`gitlab`/`git`/`cr` switches warn (stderr, once per command; exit code unchanged) about any `package.json` dependency that comes from the same repo as a registered dep but isn't registered itself:
+
+```
+[pds:warn] pyrmts-geo is a dependency but isn't managed by pds, and comes from runsascoded/pyrmts (same repo as: pyrmts, pyrmts-cfw).
+  Register it:  pds init ../pyrmts/js/packages/pyrmts-geo
+  Or the fleet: pds init ../pyrmts
+```
+
+Detection is local-only: siblings are the packages of the workspace enclosing a registered dep's `localPath`, or package dirs sharing its parent directory, within the same git repo. Packages from the consumer's own repo are ignored.
+
 ### Check status
 
 ```bash

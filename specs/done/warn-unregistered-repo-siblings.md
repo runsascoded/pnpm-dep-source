@@ -47,3 +47,32 @@ Sibling identification without a network call: if the registered deps' `localPat
 - Same project with all three registered: silent.
 - A dep from an unrelated repo, unregistered: silent (no shared parent, no repo match).
 - Warning goes to stderr; exit code unchanged; `--no-install`/dry-run paths unaffected.
+
+## Resolution
+
+Implemented in `src/siblings.ts`: `findUnregisteredSiblings` (pure), `formatSiblingWarning`, and `warnUnregisteredSiblings` (called once from each of `ls`, `status`, `local`, `github`, `gitlab`, `git`, `cr` in `src/cli.ts`).
+
+Detection, per registered dep with an existing `localPath` (no network):
+- Its repo = the nearest ancestor with a `.git` entry. Deps whose repo is the **consumer's own** are skipped (in-repo workspace packages aren't an external fleet; e.g. `apvd`'s `@apvd/*`).
+- Candidates = packages of the nearest workspace enclosing the dep (walking up to the repo root; reuses `listWorkspacePackages` from `fleet.ts`, i.e. the same expansion `init <monorepo-root>` uses), plus package dirs sharing the dep's parent dir. The shared-parent scan is skipped when the dep *is* its repo root, so a `$js/<lib>` next to other single-package repos never flags its neighbors.
+- A candidate is flagged if it's in the consumer's `dependencies`/`devDependencies` and neither a registered dep name nor a registered `npm` name.
+- Repo label: the registered deps' `github` (else `gitlab`) slug, else the repo's cwd-relative path.
+
+Warning (via `log.warn`, so stderr and `PDS_LOG_LEVEL`-controlled; once per process; exit code unchanged; any detection error demoted to a debug log):
+
+```
+[pds:warn] pyrmts-geo is a dependency but isn't managed by pds, and comes from runsascoded/pyrmts (same repo as: pyrmts, pyrmts-cfw).
+  Register it:  pds init ../pyrmts/js/packages/pyrmts-geo
+  Or the fleet: pds init ../pyrmts
+```
+
+The fleet line appears only when an enclosing workspace was found. Paths are cwd-relative (where `pds init` resolves them).
+
+Deviations:
+- `[pds:warn]` prefix instead of the spec's `⚠️`, matching pds's other warnings.
+- No name-prefix heuristic (the workspace + shared-parent checks are exact and cover the pyrmts layout).
+- `npm` switches don't warn (per the spec's list of switch verbs).
+
+Tests: `test/siblings.test.ts`. Unit: acceptance cases (flag with repo + both registered siblings; silent when all registered; silent for unrelated/undepended siblings), `devDependencies`, repo-root dep not flagging neighbor repos, shared-parent without workspace, consumer's own repo ignored, missing `localPath`, exact warning text. CLI: `ls` and multi-dep `local -I` emit exactly one warning on stderr with exit 0; silent when all registered. TFFP: the two CLI warning tests fail with the hook disabled.
+
+Verified against all 37 `.pds.json` projects under `~/c`: no warnings (all fleets fully registered; each check under 50 ms). Re-running `gbfs/cascade` with `pyrmts-geo` dropped from its config reproduces the warning from the real layout (no fleet line: `~/c/pyrmts` has no workspace file, so it's found via the shared parent).

@@ -23,6 +23,7 @@ import {
 } from './remote.js'
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
 import { detectFleet, type FleetDetection } from './fleet.js'
+import { warnUnregisteredSiblings } from './siblings.js'
 import { setLogLevel, setRetries } from './log.js'
 import {
   makeGitHubSpecifier, makePkgPrNewSpecifier,
@@ -732,6 +733,7 @@ async function listDepsAsync(verbose: boolean, all?: boolean, filters?: string[]
   if (!isGlobal) {
     projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
+    warnUnregisteredSiblings(projectRoot, config)
     pkg = loadPackageJson(projectRoot)
     overrides = loadOverrides(projectRoot, pkg)
 
@@ -837,6 +839,7 @@ program
     const projectRoot = findProjectRoot()
     const workspaceRoot = findWorkspaceRoot(projectRoot)
     const config = loadConfig(projectRoot)
+    warnUnregisteredSiblings(projectRoot, config)
 
     const items = resolveDepItems(config, queries, options.all)
     runMultiple(items, !!options.keepGoing, ([depName, depConfig]) => {
@@ -868,6 +871,7 @@ program
     const queries: (string | undefined)[] = deps.length ? deps : [undefined]
     const isGlobal = program.opts().global
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    if (!isGlobal) warnUnregisteredSiblings(findProjectRoot(), config)
 
     const resolveRef = (github: string, distBranch: string): string => {
       if (options.rawRef) return options.rawRef
@@ -936,6 +940,7 @@ program
     const queries: (string | undefined)[] = deps.length ? deps : [undefined]
     const isGlobal = program.opts().global
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    if (!isGlobal) warnUnregisteredSiblings(findProjectRoot(), config)
 
     const resolveRef = (gitlab: string, distBranch: string): string => {
       if (options.rawRef) return options.rawRef
@@ -1008,6 +1013,7 @@ program
     const queries: (string | undefined)[] = deps.length ? deps : [undefined]
     const isGlobal = program.opts().global
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    if (!isGlobal) warnUnregisteredSiblings(findProjectRoot(), config)
 
     if (isGlobal) {
       const items = resolveDepItems(config, queries, options.all)
@@ -1108,6 +1114,7 @@ program
     const queries: (string | undefined)[] = deps.length ? deps : [undefined]
     const isGlobal = program.opts().global
     const config = isGlobal ? loadGlobalConfig() : loadConfig(findProjectRoot())
+    if (!isGlobal) warnUnregisteredSiblings(findProjectRoot(), config)
 
     // Default ref: the repo's default-branch HEAD (pkg.pr.new keys builds off
     // main/PR commits; no dist branch). `commits/HEAD` resolves the default
@@ -1275,6 +1282,7 @@ program
 
     const projectRoot = findProjectRoot()
     const config = loadConfig(projectRoot)
+    warnUnregisteredSiblings(projectRoot, config)
     const pkg = loadPackageJson(projectRoot)
     const overrides = loadOverrides(projectRoot, pkg)
 
