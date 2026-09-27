@@ -96,6 +96,36 @@ describe('e2e: global installs', () => {
   })
 })
 
+describe('e2e: global init honors --source', () => {
+  // A local checkout of a real (small) npm package: `init -g -s npm` must install
+  // from the registry, not link the checkout.
+  const DEP_DIR = '/npm-dep'
+  const NAME = 'is-number'
+
+  beforeAll(() => {
+    mkdirSync(DEP_DIR, { recursive: true })
+    writeJson(join(DEP_DIR, 'package.json'), { name: NAME, version: '0.0.0-local' })
+  })
+
+  afterAll(() => {
+    execSync(`pnpm remove -g ${NAME}`, { encoding: 'utf-8' })
+    const config = readJson(GLOBAL_CONFIG_FILE) as { dependencies: Record<string, unknown> }
+    delete config.dependencies[NAME]
+    writeJson(GLOBAL_CONFIG_FILE, config)
+  })
+
+  it('pds init -g -s npm installs from npm, not the local path', () => {
+    pds(`init ${DEP_DIR} -g -s npm`)
+
+    const latest = execSync(`npm view ${NAME} version`, { encoding: 'utf-8' }).trim()
+    const listed = JSON.parse(pnpm(`list -g --json ${NAME}`))[0].dependencies[NAME]
+    expect({ version: listed.version, resolved: listed.resolved }).toEqual({
+      version: latest,
+      resolved: `https://registry.npmjs.org/${NAME}/-/${NAME}-${latest}.tgz`,
+    })
+  })
+})
+
 describe('e2e: project-level installs', () => {
   const pkgPath = join(TEST_PROJECT_DIR, 'package.json')
   const configPath = join(TEST_PROJECT_DIR, '.pds.json')

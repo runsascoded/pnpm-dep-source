@@ -513,8 +513,9 @@ Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default),
 For managing globally-installed CLI tools, use `-g` before the command:
 
 ```bash
-# Initialize a global CLI tool
+# Initialize a global CLI tool (installs from the local path, or -s gh/gl/cr/npm)
 pds -g init /path/to/local/cli -H github-user/repo
+pds -g init ~/c/js/pds -s npm   # e.g. manage pds itself; installed from npm
 
 # List global deps
 pds -g ls

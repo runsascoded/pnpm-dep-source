@@ -3,7 +3,7 @@ import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { DepConfig } from '../src/types.js'
-import { switchToLocal, switchToGitHub, switchToPkgPrNew, switchToNpm, cleanupDepReferences } from '../src/switch.js'
+import { switchToLocal, switchToGitHub, switchToPkgPrNew, switchToNpm, cleanupDepReferences, globalInstallTarget } from '../src/switch.js'
 
 const TMP = join(__dirname, 'fixtures', 'switch-cr')
 const DEP_NAME = '@test/mock-dep'
@@ -195,5 +195,34 @@ describe('override strategy (pnpm.overrides)', () => {
     expect((pkg.pnpm as { overrides: Record<string, string> }).overrides).toEqual({
       '@test/sibling': 'link:../sibling',
     })
+  })
+})
+
+describe('globalInstallTarget', () => {
+  const SHA = 'abc1234'
+  const FULL: DepConfig = { ...DEP, gitlab: 'grp/js/mock-dep', subdir: '/pkg' }
+
+  it.each([
+    ['local', {}, { specifier: 'link:../mock-dep', label: 'local: ../mock-dep' }],
+    ['github', { rawRef: SHA }, { specifier: 'https://github.com/test-org/mock-dep#abc1234&path:/pkg', label: 'GitHub: https://github.com/test-org/mock-dep#abc1234&path:/pkg' }],
+    ['gitlab', { rawRef: SHA }, { specifier: 'https://gitlab.com/grp/js/mock-dep/-/archive/abc1234/mock-dep-abc1234.tar.gz', label: 'GitLab: grp/js/mock-dep@abc1234' }],
+    ['cr', { rawRef: SHA }, { specifier: 'https://pkg.pr.new/test-org/mock-dep/@test/mock-dep@abc1234', label: 'pkg.pr.new: https://pkg.pr.new/test-org/mock-dep/@test/mock-dep@abc1234' }],
+    ['npm', { version: '2.0.0' }, { specifier: '@test/mock-dep@2.0.0', label: 'NPM: @test/mock-dep@2.0.0' }],
+  ] as const)('%s', (source, opts, expected) => {
+    expect(globalInstallTarget(DEP_NAME, FULL, source, opts)).toEqual(expected)
+  })
+
+  it('npm falls back to the dep name when no npm name is configured', () => {
+    expect(globalInstallTarget('bare-dep', { localPath: '../x' }, 'npm', { version: '1.0.0' }))
+      .toEqual({ specifier: 'bare-dep@1.0.0', label: 'NPM: bare-dep@1.0.0' })
+  })
+
+  it.each([
+    ['local', {}, 'No local path configured for @test/mock-dep. Use "pds set @test/mock-dep -l <path>" to set one.'],
+    ['github', {}, 'No GitHub repo configured for @test/mock-dep. Use "pds init" with -H/--github'],
+    ['gitlab', {}, 'No GitLab repo configured for @test/mock-dep. Use "pds init" with -L/--gitlab'],
+    ['cr', { github: 'o/r' }, 'No npm package name configured for @test/mock-dep. Use "pds set @test/mock-dep -n <name>"'],
+  ] as const)('%s: throws when its field is missing', (source, depConfig, message) => {
+    expect(() => globalInstallTarget(DEP_NAME, depConfig, source, { rawRef: SHA })).toThrow(new Error(message))
   })
 })
