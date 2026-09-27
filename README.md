@@ -96,7 +96,7 @@ pds gh [deps...] -n               # Dry-run: show what would be installed
 This will (per dep):
 - Set `package.json` dependency to `github:user/repo#sha`
 - Remove local path from `pnpm-workspace.yaml`
-- Remove from `vite.config.ts` `optimizeDeps.exclude`
+- Remove from `vite.config.ts` `optimizeDeps.exclude` (unless the entry is yours: `keepViteExclude`)
 
 One `pnpm install` is run at the end (skip with `-I`).
 
@@ -112,7 +112,7 @@ pds gl [deps...] -n               # Dry-run: show what would be installed
 This will (per dep):
 - Set `package.json` dependency to GitLab tarball URL
 - Remove local path from `pnpm-workspace.yaml`
-- Remove from `vite.config.ts` `optimizeDeps.exclude`
+- Remove from `vite.config.ts` `optimizeDeps.exclude` (unless the entry is yours: `keepViteExclude`)
 
 One `pnpm install` is run at the end (skip with `-I`).
 
@@ -137,7 +137,7 @@ packages have unresolvable `workspace:*` / `catalog:` deps and no build output.
 This will (per dep):
 - Set `package.json` dependency to `https://pkg.pr.new/<owner>/<repo>/<npmName>@<sha>`
 - Remove local path from `pnpm-workspace.yaml`
-- Remove from `vite.config.ts` `optimizeDeps.exclude`
+- Remove from `vite.config.ts` `optimizeDeps.exclude` (unless the entry is yours: `keepViteExclude`)
 
 The URL is derived from the dep's existing `github` (`<owner>/<repo>`) + `npm` (`<npmName>`,
 scope included) config — no new config field. The SHA defaults to the GitHub
@@ -477,6 +477,8 @@ The tool stores configuration in `.pds.json` (also supports `.pnpm-dep-source.js
 The `subdir` field is optional and auto-detected during `init` for monorepo packages. The `override` field is optional — when `true`, `pds` manages the dep through `pnpm.overrides` instead of the `package.json` dep spec (see [Override strategy](#override-strategy--o--override)).
 
 `distBranch` (default `"dist"`) names the branch where built tarballs live, for `gh`/`gl`/`git` (dist-tarball) mode. `init` probes it: if the repo resolves but has no such branch — e.g. a fork that ships via pkg.pr.new (`cr`) rather than npm-dist — `pds` records `"noDist": true` instead (and drops `distBranch`). A `noDist` dep skips the dist probe and omits its `GitHub:`/`GitLab:` row from `ls`/`status` in all modes (it's not installable that way). Re-`init` to refresh if the repo later gains a dist branch. A missing/typo'd repo (bare 404) is *not* marked `noDist`.
+
+`keepViteExclude` records who owns the dep's vite `optimizeDeps.exclude` entry. `true`: it's yours (e.g. a WASM package that must never be pre-bundled), so switching away from local leaves it; `pds l` sets this automatically when it finds the dep already excluded while it wasn't local, or set it with `pds set <dep> -k`. `false` (`pds set <dep> -K`): pds manages the entry and skips that detection. Unset: pds manages it.
 
 Set `"checkOn"` to control when the git hook check runs: `"pre-push"` (default), `"pre-commit"`, or `"none"` to disable. The legacy `"skipCheck": true` is still supported (treated as `"checkOn": "none"`).
 

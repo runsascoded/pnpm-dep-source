@@ -1,4 +1,4 @@
-import { execSync } from 'child_process'
+import { execSync, spawnSync } from 'child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -257,6 +257,33 @@ export default defineConfig({
 
       run('npm mock-dep 2.0.0 -I')
       expect(existsSync(join(TEST_DIR, 'pnpm-workspace.yaml'))).toBe(false)
+    })
+  })
+
+  describe('vite config variants', () => {
+    it.each(['vite.config.js', 'vite.config.mts', 'vite.config.mjs'])('edits and round-trips %s', (name) => {
+      rmSync(join(TEST_DIR, 'vite.config.ts'))
+      const original = `import { defineConfig } from 'vite'\n\nexport default defineConfig({\n  plugins: [],\n})\n`
+      writeFileSync(join(TEST_DIR, name), original)
+
+      run('local mock-dep -I')
+      expect(readFileSync(join(TEST_DIR, name), 'utf-8')).toBe(
+        `import { defineConfig } from 'vite'\n\nexport default defineConfig({\n  plugins: [],\n  optimizeDeps: {\n    exclude: ['@test/mock-dep'],\n  },\n})\n`,
+      )
+      run('github mock-dep -R main -I')
+      expect(readFileSync(join(TEST_DIR, name), 'utf-8')).toBe(original)
+    })
+
+    it('warns on stderr and leaves the file alone when it can\'t edit safely', () => {
+      const original = `import { defineConfig } from 'vite'\n\nconst excludes = ['foo']\n\nexport default defineConfig({\n  optimizeDeps: {\n    exclude: excludes,\n  },\n})\n`
+      writeFileSync(join(TEST_DIR, 'vite.config.ts'), original)
+
+      const result = spawnSync('node', [CLI_PATH, 'local', 'mock-dep', '-I'], { cwd: TEST_DIR, encoding: 'utf-8' })
+      expect(result.status).toBe(0)
+      expect(result.stderr.trimEnd().split('\n')).toEqual([
+        '[pds:warn] vite.config.ts: couldn\'t add \'@test/mock-dep\' to `optimizeDeps.exclude` (`optimizeDeps.exclude` is not an array literal); edit it manually',
+      ])
+      expect(readFileSync(join(TEST_DIR, 'vite.config.ts'), 'utf-8')).toBe(original)
     })
   })
 
