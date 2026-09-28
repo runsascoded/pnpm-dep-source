@@ -24,6 +24,7 @@ import {
 import { getSourceType, displayDep, buildGlobalDepInfoAsync, buildProjectDepInfoAsync, fetchRemoteVersionsAsync } from './display.js'
 import { detectFleet, type FleetDetection } from './fleet.js'
 import { warnUnregisteredSiblings } from './siblings.js'
+import { generateHookScript } from './hooks.js'
 import { setLogLevel, setRetries } from './log.js'
 import {
   makeGitHubSpecifier, makePkgPrNewSpecifier,
@@ -1397,34 +1398,6 @@ program
     process.exit(1)
   })
 
-function generateHookScript(hookType: string, previousHooksPath?: string): string {
-  const previousHooksSection = previousHooksPath
-    ? `if [ -x "${previousHooksPath}/${hookType}" ]; then
-  "${previousHooksPath}/${hookType}" || exit 1
-fi`
-    : '# (no previous core.hooksPath)'
-
-  return `#!/bin/sh
-# pds ${hookType} hook - checks for local dependencies
-# Installed by: pds hooks install
-
-# 1. Run pds check
-if command -v pds >/dev/null 2>&1; then
-  pds check --hook ${hookType} || exit 1
-else
-  echo "Warning: pds not found in PATH, skipping local dependency check"
-fi
-
-# 2. Chain to previous global hooks (if any were configured before pds)
-${previousHooksSection}
-
-# 3. Chain to local .git/hooks (which Git ignores when core.hooksPath is set)
-if [ -x .git/hooks/${hookType} ]; then
-  .git/hooks/${hookType} || exit 1
-fi
-`
-}
-
 const hooks = program
   .command('hooks')
   .description('Manage git hooks for pds')
@@ -1450,6 +1423,9 @@ hooks
       // Save the previous path so we can chain to it
       previousHooksPath = currentHooksPath
       console.log(`Chaining to existing hooks: ${currentHooksPath}`)
+    } else if (currentHooksPath === GLOBAL_HOOKS_DIR) {
+      // Reinstall (e.g. to regenerate the scripts): keep the existing chain
+      previousHooksPath = loadHooksConfig().previousHooksPath
     }
 
     // Create hooks directory

@@ -368,6 +368,8 @@ pds hooks status     # Check installation status
 
 Installs both `pre-push` and `pre-commit` hooks via `git config --global core.hooksPath`. By default, the check runs on **pre-push** — local deps are caught before pushing, not before every commit (which would interfere with WIP workflows).
 
+Setting `core.hooksPath` makes Git skip each repo's own `.git/hooks`, so the pds hooks chain to them (in linked worktrees too), and to any `core.hooksPath` that was set before `pds hooks install --force`. Chained hooks get the same args and `pre-push` stdin Git passed. Re-run `pds hooks install` after upgrading pds to regenerate the scripts; it keeps the existing chain.
+
 Each hook calls `pds check --hook <type>`, and `pds check` decides whether to run based on the resolved `checkOn` config:
 
 ```
